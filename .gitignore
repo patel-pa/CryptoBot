@@ -97,3 +97,4 @@ venv/
 # Others
 PROJECT_CONTEXT.md
 cryptobot_timeline*
+.env
