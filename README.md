@@ -48,7 +48,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 - **Incremental / resumable loading** — before fetching, the collector reads `MAX(close_time)` from PostgreSQL and resumes 1 ms after the last stored candle, so the same script serves both the initial backfill and scheduled top-ups.
 - **Pagination** — handles Binance's 1,000-candle-per-request limit by advancing `startTime` until a partial page signals the present has been reached.
 - **Scheduled orchestration** — two Airflow DAGs keep the system current: `cryptobot_ingest` re-runs the idempotent collector every 15 minutes, and `cryptobot_train` catches the data up and retrains the model daily, publishing `model.pkl` to a shared volume the API reads live (no restart needed).
-- **Verified data quality** — 239,610 one-minute BTC/USDT candles loaded with **0 gaps**, confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
+- **Verified data quality** — **~240,000+** one-minute BTC/USDT candles loaded with **0 gaps** (and growing — the ingest DAG tops up every 15 min), confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
 - **Predicted-vs-actual tracking** — every `/predict` call is persisted, so `/predictions` can join each forecast against the candle's real close for later evaluation.
 - **CI on every push** — GitHub Actions runs flake8 (fails on syntax/undefined-name errors), the pytest suite, and a Docker image build.
 
@@ -63,13 +63,12 @@ src/
 ├── features/       # build_features.py
 ├── models/         # train_model.py, predict_model.py
 ├── api/            # main.py (FastAPI: /charts, /stream, /predict, /predictions, /health)
-├── visualization/  # app.py (Streamlit dashboard), visualize.py (live chart)
+├── visualization/  # app.py (Streamlit dashboard: historical + live + predictions)
 ├── params/         # constants, enums
 └── utils/          # time / url / dataframe helpers
 airflow/            # Dockerfile + dags/ (cryptobot_ingest.py, cryptobot_train.py)
 tests/              # pytest suite
 notebooks/          # exploration + verification
-references/         # phase reports (phase1–phase4), architecture diagrams, defense deck
 .github/workflows/  # CI pipeline (python-app.yml)
 docker-compose.yml  # full stack: postgres, mongo, init, historical, streamer, api, dashboard, airflow
 ```
@@ -143,9 +142,3 @@ pytest -v
 ```
 
 CI runs the same suite plus flake8 linting and a Docker image build on every push (see `.github/workflows/python-app.yml`).
-
----
-
-## Notes
-
-Detailed design decisions are documented in `references/phase1` and `references/phase2`.

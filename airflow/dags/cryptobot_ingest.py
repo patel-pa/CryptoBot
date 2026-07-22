@@ -7,6 +7,11 @@ Every 15 minutes, fetch the latest historical candles into PostgreSQL by running
 fetch_historical is idempotent (it resumes from the last stored candle), so
 running it on a schedule simply keeps Postgres up to date — this is what removes
 the "stale data" gap you saw earlier, automatically.
+
+NOTE: this task runs the src/ code BAKED INTO the cryptobot-app image (a fresh
+DockerOperator container), NOT the ./src bind mount the compose services use.
+After editing fetch_historical.py, run `docker compose build` or this DAG keeps
+running the OLD code.
 """
 import os
 from datetime import datetime, timedelta

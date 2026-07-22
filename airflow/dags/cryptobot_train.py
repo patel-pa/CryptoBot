@@ -11,6 +11,11 @@ train_model writes models/model.pkl. That path is a SHARED Docker volume
 freshly retrained model on its next /predict — no restart needed
 (predict_model re-reads the file each call). This mirrors how you'd share the
 model via S3 on AWS.
+
+NOTE: both tasks run the src/ code BAKED INTO the cryptobot-app image (fresh
+DockerOperator containers), NOT the ./src bind mount the compose services use.
+After editing fetch_historical.py or train_model.py, run `docker compose build`
+or these DAGs keep running the OLD code.
 """
 import os
 from datetime import datetime, timedelta
@@ -60,6 +65,11 @@ with DAG(
         mounts=[MODEL_MOUNT],         # write the new model.pkl to the shared volume
         auto_remove="success",
         mount_tmp_dir=False,
+        # Box the training run so the daily retrain can't hog the host: at most
+        # 1 GB RAM and 1 CPU inside this task container. The system stays
+        # responsive even while the model is retraining.
+        mem_limit="1g",
+        cpus=1.0,
     )
 
     fetch >> train                    # train runs only after fetch succeeds

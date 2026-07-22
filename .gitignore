@@ -98,3 +98,8 @@ venv/
 PROJECT_CONTEXT.md
 cryptobot_timeline*
 .env
+
+
+# Keep the ENTIRE references/ directory LOCAL only — phase reports, defense
+# deck, course notes stay on disk but are never pushed to the CV repo.
+/references/

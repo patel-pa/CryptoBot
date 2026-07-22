@@ -27,12 +27,22 @@ REQUIRES (install once):
 
 import json                          # to decode the JSON ticks the stream sends
 import os                            # to read configuration (API_BASE) from the environment
+import time                          # small back-off pause before reconnecting the stream
+import threading                     # run the live stream in the background, off the UI thread
 
 import requests                      # to call our FastAPI endpoints over HTTP
 import pandas as pd                  # to hold the candle data in a table
 import streamlit as st              # the dashboard framework
 import plotly.graph_objects as go    # to draw an interactive candlestick chart
 import websocket                     # websocket-client (sync) — same lib as stream_live.py
+
+# --- Avoid a pandas 3.0 + pyarrow segfault --------------------------------
+# pandas 3.0 defaults string columns to a PyArrow-backed dtype whose
+# ArrowStringArray._from_sequence SEGFAULTS (pandas 3.0.3 + pyarrow 25.0.0)
+# when we build the many dt.strftime() chart labels on every refresh — which
+# crashed the whole dashboard process every ~30-60s. Forcing the classic
+# numpy/object string backend sidesteps the broken PyArrow path entirely.
+pd.set_option("future.infer_string", False)
 
 # ---------------------------------------------------------------------------
 # 0. CONFIGURATION
@@ -48,6 +58,22 @@ CANDLE_COLS = ["open_time", "open", "high", "low", "close"]
 # st.set_page_config() must be the FIRST Streamlit call. It sets the browser
 # tab title, the little icon, and uses the full page width.
 st.set_page_config(page_title="CryptoBot Dashboard", page_icon="📈", layout="wide")
+
+# --- Stop the page dimming on every auto-refresh ---------------------------
+# While a (fragment) rerun runs, Streamlit greys out the not-yet-updated
+# "stale" elements. Our chart refreshes every few seconds, so on a busy machine
+# that grey-out reads as the whole screen flashing darker. Forcing stale
+# elements to stay fully opaque makes each refresh visually seamless. The
+# `transition: none` line also removes the fade animation so nothing flickers.
+st.markdown(
+    """
+    <style>
+      [data-stale="true"] { opacity: 1 !important; }
+      .element-container, [data-testid="stVerticalBlock"] { transition: none !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -65,11 +91,21 @@ def fetch_charts(symbol: str, limit: int) -> pd.DataFrame:
     )
     response.raise_for_status()
     df = pd.DataFrame(response.json())
+    # An empty DB (e.g. still backfilling, or just after `down -v`) returns [].
+    # pd.DataFrame([]) has NO columns, so df["open_time"] would KeyError. Return
+    # an empty-but-typed frame instead; the caller's `hist_df.empty` guard then
+    # shows a friendly "still loading" message rather than crashing the page.
+    if df.empty:
+        return pd.DataFrame(columns=CANDLE_COLS)
     # open_time arrives as an ISO string — turn it into a real datetime.
     df["open_time"] = pd.to_datetime(df["open_time"])
     return df
 
 
+# /predict is the expensive one: it loads the model, reads Mongo AND upserts the
+# forecast. The upsert is keyed by target candle, so 6 calls/min store exactly
+# the same history as 60 would — caching costs no data, only load.
+@st.cache_data(ttl=10)
 def fetch_prediction(symbol: str) -> float:
     """GET /predict -> the model's forecast for the next candle's close."""
     response = requests.get(f"{API_BASE}/predict", params={"symbol": symbol}, timeout=10)
@@ -77,6 +113,8 @@ def fetch_prediction(symbol: str) -> float:
     return response.json()["predicted_next_close"]
 
 
+# Joins up to 240 Mongo documents; the stored history only grows one row a minute.
+@st.cache_data(ttl=30)
 def fetch_predictions(symbol: str) -> list:
     """GET /predictions -> stored forecasts joined with each candle's actual close."""
     response = requests.get(
@@ -94,43 +132,61 @@ def api_is_up() -> bool:
         return False
 
 
-def _open_stream():
-    """Open (or reuse) a PERSISTENT WebSocket to /stream, kept in session_state.
+class LiveStreamer:
+    """Owns ONE WebSocket to /stream on a background thread and keeps the latest tick.
 
-    Reusing one connection across refreshes is the key to smooth updates: we
-    only pay the slow ~1s connect ONCE, then every later read is instant. That
-    is what stops the chart from dimming/flashing every 2 seconds.
+    Why a background thread instead of reading the socket during each refresh?
+    Streamlit re-runs the script (and our fragment) constantly. A socket stored
+    in session_state did NOT survive those re-runs — every refresh reconnected a
+    fresh connection, and a fresh connection has nothing buffered yet, so it
+    always returned None. Result: the live candle never updated (0 collected).
+
+    This thread instead stays connected for the life of the app, continuously
+    reading ticks and stashing the newest one. Each UI refresh just reads that
+    stashed value — instant, non-blocking, and always current. If the connection
+    drops, the loop reconnects on its own after a short pause.
 
     Each Binance tick carries the full state of the in-progress 1-minute candle
     (open, high, low, close + start time), so one tick = the live candle's OHLC.
     """
-    ws = st.session_state.get("ws_conn")
-    if ws is not None:
-        return ws
+
+    def __init__(self, ws_url: str):
+        self.ws_url = ws_url
+        self._latest = None                       # newest tick seen (a plain dict)
+        self._lock = threading.Lock()             # guard reads/writes across threads
+        thread = threading.Thread(target=self._run, daemon=True)
+        thread.start()                            # daemon: dies automatically with the app
+
+    def _run(self):
+        """Reconnect-forever loop: read every tick and remember the latest."""
+        while True:
+            try:
+                ws = websocket.create_connection(self.ws_url, timeout=5)
+                while True:
+                    tick = json.loads(ws.recv())  # blocks here until the next tick
+                    with self._lock:
+                        self._latest = tick
+            except Exception:
+                time.sleep(2)                     # dropped/unreachable — back off, retry
+
+    def latest_tick(self):
+        """Return the most recent tick (or None if none has arrived yet)."""
+        with self._lock:
+            return self._latest
+
+
+# @st.cache_resource keeps ONE LiveStreamer alive across every re-run and browser
+# session (unlike session_state, which failed to hold the live socket). The
+# thread starts on first use and then simply keeps running.
+@st.cache_resource
+def get_streamer() -> LiveStreamer:
     ws_url = API_BASE.replace("http", "ws") + "/stream"   # http->ws (https->wss)
-    ws = websocket.create_connection(ws_url, timeout=5)
-    ws.settimeout(0.3)                # quick reads: don't block waiting for new data
-    st.session_state.ws_conn = ws
-    return ws
+    return LiveStreamer(ws_url)
 
 
 def read_latest_tick():
-    """Drain all ticks buffered on the persistent stream and return the NEWEST.
-
-    The connection stays open between refreshes, so messages pile up in its
-    buffer. We read them all quickly and keep the last one (the freshest price).
-    Returns None if nothing new has arrived, or on a dropped connection.
-    """
-    try:
-        ws = _open_stream()
-        latest = None
-        while True:                          # keep reading until the buffer is empty
-            latest = json.loads(ws.recv())   # newest buffered message wins
-    except websocket.WebSocketTimeoutException:
-        return latest                        # buffer drained — normal exit
-    except Exception:
-        st.session_state.ws_conn = None      # connection broke — reopen next time
-        return None
+    """Return the freshest live tick from the background streamer (or None)."""
+    return get_streamer().latest_tick()
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +219,13 @@ if not api_is_up():
 # ---------------------------------------------------------------------------
 hist_df = fetch_charts(symbol, limit)
 if hist_df.empty:
-    st.warning("No historical candles returned for this symbol yet.")
+    st.warning(
+        "⏳ Historical candles are still loading. The backfill "
+        "(`cryptobot-historical`) fetches the price history into the database "
+        "the first time it runs — this can take a couple of minutes after a "
+        "fresh start or a `docker compose down -v`. This page will fill in "
+        "automatically; give it a minute, then press **R** to rerun."
+    )
     st.stop()
 
 
@@ -177,7 +239,9 @@ if "live_candles" not in st.session_state:
     st.session_state.live_candles = {}      # minute -> live OHLC candle
 
 
-@st.fragment(run_every="1s")
+# These are 1-minute candles: a sub-second cadence redraws identical data while
+# blocking the script thread, which starves Streamlit's browser connection.
+@st.fragment(run_every="3s")
 def merged_chart():
     # --- 1) pull the freshest live tick and fold it into its minute's candle -
     tick = read_latest_tick()
@@ -263,7 +327,7 @@ def merged_chart():
         yaxis=dict(showgrid=True, gridcolor="#1c2127", side="right"),   # price on right
         legend=dict(orientation="h", y=1.04, x=0),
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # --- 7) PREDICTED vs ACTUAL close — persistent history from the backend --
     # Forecasts are stored in MongoDB by the API and joined with each candle's
@@ -313,7 +377,7 @@ def merged_chart():
             yaxis=dict(showgrid=True, gridcolor="#1c2127", side="right"),
             legend=dict(orientation="h", y=1.12, x=0),
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
         # Error metrics over candles whose actual close is already known.
         paired = pdf.dropna(subset=["actual_close"])
         if not paired.empty:
@@ -331,4 +395,4 @@ merged_chart()   # call once; the fragment keeps itself refreshing every 2s
 # 6. RAW DATA (collapsible) — the historical candles behind the chart
 # ---------------------------------------------------------------------------
 with st.expander("Show raw historical candle data"):
-    st.dataframe(hist_df[::-1], use_container_width=True)
+    st.dataframe(hist_df[::-1], width="stretch")

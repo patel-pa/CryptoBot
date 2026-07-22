@@ -22,6 +22,15 @@ x-app: &app
     POSTGRES_PORT: 5432
     MONGO_HOST: mongodb
     MONGO_PORT: 27017
+  # Run the LIVE host source in every COMPOSE-managed app container, so edits to
+  # src/ take effect on the next container start/run — no `docker compose build`.
+  # (Services that declare their own `volumes:` below must re-list this line: a
+  # service-level volumes block replaces this inherited one rather than merging.)
+  # NOTE: this does NOT reach Airflow's DAG tasks — they run in fresh containers
+  # launched by DockerOperator from the baked cryptobot-app image. After editing
+  # src/ that a DAG runs, `docker compose build` for it to take effect there.
+  volumes:
+    - ./src:/app/src
   networks:
     - pipeline_network
 
@@ -42,9 +51,19 @@ services:
     networks:
       - pipeline_network
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER}"]
+      # Must pass -d: without it, pg_isready connects to a DB named after the
+      # USER (cryptobot_user), which doesn't exist, spamming the log with
+      # "FATAL: database \"cryptobot_user\" does not exist" every interval.
+      # Targeting the real DB keeps the check clean (and still exits 0 = healthy).
+      # Also -h localhost to force a TCP probe (not the Unix socket, which answers
+      # during initdb's bootstrap before TCP:5432 is really listening). start_period
+      # excludes that first-boot window, so dependents can't start against a DB
+      # that isn't truly accepting TCP connections yet.
+      test: ["CMD", "pg_isready", "-h", "localhost", "-U", "${POSTGRES_USER}", "-d", "${POSTGRES_DB}"]
       interval: 5s
-      retries: 5
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   mongodb:
     image: mongo:6
@@ -60,9 +79,13 @@ services:
     networks:
       - pipeline_network
     healthcheck:
+      # start_period gives mongo's first-boot bootstrap (initdb + root-user/auth
+      # setup) time to finish before failed pings count against it.
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 5s
-      retries: 5
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # ------------------- One-shot: create schema + indexes -------------------
   init:
@@ -109,6 +132,7 @@ services:
       - "8000:8000"      # http://localhost:8000/docs  (change the LEFT port if 8000 is busy)
     volumes:
       - models_data:/app/models     # read the model Airflow retrains (shared volume)
+      - ./src:/app/src              # live host code (re-listed; see x-app note)
     depends_on:
       init:
         condition: service_completed_successfully
@@ -117,12 +141,22 @@ services:
   dashboard:
     <<: *app
     container_name: cryptobot-dashboard
-    command: streamlit run src/visualization/app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true
+    # fileWatcherType=none DISABLES file watching entirely. On a Windows -> WSL2
+    # bind mount, ANY watcher (poll or the default watchdog) sees phantom
+    # file-change events and Streamlit restarts its process every ~30s — an
+    # endless crash loop. A container doesn't need live-watch anyway: the bind
+    # mount below still runs your LIVE code, you just restart to deploy edits —
+    # `docker compose restart dashboard` (or press "R" in an open browser tab).
+    command: streamlit run src/visualization/app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true --server.fileWatcherType=none
     restart: unless-stopped
     environment:
       API_BASE: http://api:8000     # reach the API container by its service name
     ports:
       - "8501:8501"      # http://localhost:8501
+    volumes:
+      # Run the LIVE host source, not the copy baked into the image. Edits to
+      # src/ take effect on the next Streamlit rerun — no `docker compose --build`.
+      - ./src:/app/src
     depends_on:
       - api
 
@@ -132,6 +166,10 @@ services:
   # project's data dependencies. DAGs live in airflow/dags/:
   #   cryptobot_ingest — fetch_historical every 15 min
   #   cryptobot_train  — fetch + retrain the model daily
+  # IMPORTANT: those DAG task containers run the src/ code BAKED INTO the image,
+  # NOT the ./src bind mount the compose services use. So after editing anything
+  # under src/ that a DAG runs (fetch_historical, train_model), run
+  # `docker compose build` — otherwise the ingest/train DAGs silently run OLD code.
   airflow:
     build:
       context: .
@@ -139,23 +177,41 @@ services:
     image: cryptobot-airflow
     container_name: cryptobot-airflow
     restart: unless-stopped
-    command: standalone
+    # Clean stale *.pid files (persisted in the airflow_data volume) before boot —
+    # otherwise the webserver refuses to start with "Already running on PID …".
+    command: bash -c "rm -f /opt/airflow/*.pid && exec airflow standalone"
     env_file: .env                  # gives the DAGs the DB user/password/name
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"  # new DAGs start UNPAUSED (active) — survives a down -v, no manual unpausing
+      # --- Keep the scheduler quiet while idle (big drop in background CPU) ---
+      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "120"   # re-parse DAGs every 2 min, not 30s
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "300"       # scan for new DAG files every 5 min
+      AIRFLOW__SCHEDULER__PARSING_PROCESSES: "1"             # single DAG-parsing worker
+      AIRFLOW__CORE__PARALLELISM: "4"                        # cap total concurrent tasks
+      # --- Webserver reliability on a resource-constrained WSL2 host ---
+      AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: "300"   # don't kill the webserver if gunicorn boots slowly
+      AIRFLOW__WEBSERVER__WORKERS: "2"                        # fewer gunicorn workers = faster boot, less RAM
     ports:
-      - "8080:8080"                 # Airflow UI -> http://localhost:8080
+      # Bind to loopback only: Airflow holds host-root via the docker.sock mount
+      # below, so its UI must NOT be reachable from the LAN. localhost still works.
+      # Host port 8081 (not 8080) because Apache/httpd already occupies 8080 here.
+      - "127.0.0.1:8081:8080"       # Airflow UI -> http://localhost:8081
     volumes:
       - ./airflow/dags:/opt/airflow/dags           # edit DAGs without rebuilding
       - airflow_data:/opt/airflow                   # persist Airflow's metadata DB
       - /var/run/docker.sock:/var/run/docker.sock   # lets DockerOperator launch task containers
     networks:
       - pipeline_network
+    # Airflow's DAG tasks run in their OWN containers (DockerOperator), so it only
+    # needs the schema to exist: it waits for `init` to finish, nothing more. It
+    # deliberately does NOT wait for `historical` — a one-shot backfill that fails
+    # (e.g. a transient network error) must never permanently block the orchestrator
+    # from booting. You normally start Airflow on its own anyway, by which time the
+    # backfill has long finished.
     depends_on:
-      postgres:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
+      init:
+        condition: service_completed_successfully
 
 networks:
   pipeline_network:
