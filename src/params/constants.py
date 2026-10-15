@@ -33,7 +33,7 @@ BINANCE_KLINES_COLUMNS = [
 
 
 # Starting point for historical data collection (can be adjusted as needed)
-HISTORICAL_START_DATE = "01.01.2026T00:00"
+HISTORICAL_START_DATE = "01.10.2026T00:00"
 
 # Storage names — single source of truth, shared by writers, init, and ML
 POSTGRES_TABLE = "ohlcv_data"        # historical candles (batch pipeline)
