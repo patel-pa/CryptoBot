@@ -4,6 +4,10 @@ An end-to-end data engineering platform that ingests Binance BTC/USDT market dat
 
 > Built solo as the capstone Data Engineering project for the DataScientest / Liora Data Engineer programme — designed, implemented, and delivered end-to-end.
 
+## v2 in progress
+
+The AWS/EKS deployment is being built on the `dev` branch. The finished Data Engineering version is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
+
 ---
 
 ## Architecture
