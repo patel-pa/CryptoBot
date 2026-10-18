@@ -3,7 +3,7 @@ from src.params.enums import Interval, Symbol
 # All symbols the system collects, stores, and predicts for
 SUPPORTED_SYMBOLS = [Symbol.BTCUSDT] #Symbol.ETHUSDT
 
-# REST API: 15-minute candles for historical data / ML training
+# REST API: 1-minute candles for historical data / ML training
 DEFAULT_REST_INTERVAL = Interval.ONE_MINUTE
 
 # WebSocket: 1-minute candles for the live streaming dashboard
