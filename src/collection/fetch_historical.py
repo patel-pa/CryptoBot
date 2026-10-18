@@ -6,11 +6,10 @@ sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..')))
 
 import requests
 import pandas as pd
-from dotenv import load_dotenv
-load_dotenv()
 
+from src.config import historical_start_date
 from src.utils.time_utils import to_ms
-from src.params.constants import BINANCE_KLINES_URL, HISTORICAL_START_DATE, DEFAULT_REST_INTERVAL
+from src.params.constants import BINANCE_KLINES_URL, DEFAULT_REST_INTERVAL
 from src.utils.dataframe_utils import raw_to_dataframe
 
 from src.storage.postgres_writer import save_to_postgres, get_last_close_ms
@@ -65,7 +64,7 @@ last_close_ms = get_last_close_ms(SYMBOL)
 if last_close_ms is not None:
     start_time = last_close_ms + 1              # resume 1ms after last stored candle
 else:
-    start_time = to_ms(HISTORICAL_START_DATE)   # empty DB → default start
+    start_time = to_ms(historical_start_date())  # empty DB → configured start
 
 end_time  = time_ns() // 1_000_000          # now, in ms
 

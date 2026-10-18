@@ -1,5 +1,5 @@
 from pathlib import Path
-from src.storage.postgres import engine
+from src.storage.postgres import get_engine
 from src.storage.mongo import get_collection
 from src.params.constants import MONGO_COLLECTION, PREDICTIONS_COLLECTION
 
@@ -8,7 +8,7 @@ SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 
 def init_postgres():
     sql = SCHEMA_FILE.read_text(encoding="utf-8")
-    with engine.begin() as conn:          # begin() = auto commit/rollback
+    with get_engine().begin() as conn:          # begin() = auto commit/rollback
         conn.exec_driver_sql(sql)         # raw psycopg2 → allows multiple statements
     print("✓ Postgres tables ready")
 

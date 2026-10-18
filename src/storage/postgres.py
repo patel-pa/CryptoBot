@@ -1,43 +1,25 @@
-from dotenv import load_dotenv 
-import os
-from sqlalchemy import create_engine, text 
+from functools import lru_cache
 
-load_dotenv()
+from sqlalchemy import create_engine, text
 
-# Read credentials from .env file
-postgres_host = os.getenv('POSTGRES_HOST')
-postgres_port = os.getenv('POSTGRES_PORT')
-postgres_user = os.getenv('POSTGRES_USER')
-postgres_password = os.getenv('POSTGRES_PASSWORD')
-postgres_db = os.getenv('POSTGRES_DB')
+from src.config import postgres_settings
 
-# Fail fast if .env is missing or any credential is absent
-_required = {
-    "POSTGRES_HOST": postgres_host,
-    "POSTGRES_PORT": postgres_port,
-    "POSTGRES_USER": postgres_user,
-    "POSTGRES_PASSWORD": postgres_password,
-    "POSTGRES_DB": postgres_db,
-}
-_missing = [name for name, value in _required.items() if not value]
-if _missing:
-    raise EnvironmentError(
-        f"Missing Postgres credentials in .env: {', '.join(_missing)}. "
-        "Check that a .env file exists with these keys."
-    )
 
-# Create database connection string
-DATABASE_URL = f"postgresql://{postgres_user}:{postgres_password}@{postgres_host}:{postgres_port}/{postgres_db}"
+@lru_cache(maxsize=1)
+def get_engine():
+    """Shared SQLAlchemy engine, created on first use (not at import time).
 
-# Create SQLAlchemy engine
-engine = create_engine(DATABASE_URL)
+    Importing this module therefore never needs the Postgres env vars; only
+    code that actually talks to Postgres does. Settings come from src.config.
+    """
+    return create_engine(postgres_settings().url())
 
 
 def test_connection():
     """Test the database connection."""
     try:
-        with engine.connect() as connection:
-            result = connection.execute(text("SELECT 1"))
+        with get_engine().connect() as connection:
+            connection.execute(text("SELECT 1"))
             print("✓ Database connection successful!")
             return True
     except Exception as e:

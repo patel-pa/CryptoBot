@@ -85,17 +85,10 @@ docker-compose.yml  # full stack: postgres, mongo, init, historical, streamer, a
 
 ### 1. Configure environment
 
-Create a `.env` file in the project root with your database credentials:
+Copy the template and set your own passwords (`.env.example` lists every variable):
 
 ```bash
-POSTGRES_USER=cryptobot
-POSTGRES_PASSWORD=change_me
-POSTGRES_DB=cryptobot
-POSTGRES_PORT=5432
-MONGO_USER=cryptobot
-MONGO_PASSWORD=change_me
-MONGO_DB=cryptobot
-MONGO_PORT=27017
+cp .env.example .env
 ```
 
 ### 2. Launch the full stack

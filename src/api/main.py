@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy import text
 
-from src.storage.postgres import engine
+from src.storage.postgres import get_engine
 from src.storage.mongo import get_collection
 from src.storage.mongo_writer import save_prediction
 from src.params.constants import (
@@ -38,7 +38,7 @@ def charts(symbol: str = DEFAULT_SYMBOL, limit: int = 100):
         f"SELECT * FROM {POSTGRES_TABLE} WHERE symbol = :s "
         f"ORDER BY open_time DESC LIMIT :n"
     )
-    df = pd.read_sql(query, engine, params={"s": symbol, "n": limit})
+    df = pd.read_sql(query, get_engine(), params={"s": symbol, "n": limit})
     records = df.to_dict(orient="records")
     return records[::-1]  # reverse DESC fetch back into chronological order
 

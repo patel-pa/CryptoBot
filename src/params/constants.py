@@ -32,7 +32,8 @@ BINANCE_KLINES_COLUMNS = [
 ]
 
 
-# Starting point for historical data collection (can be adjusted as needed)
+# Default start of the backfill when Postgres is empty ('DD.MM.YYYYThh:mm').
+# Override per environment with the HISTORICAL_START_DATE env var (src/config.py).
 HISTORICAL_START_DATE = "01.10.2026T00:00"
 
 # Storage names — single source of truth, shared by writers, init, and ML

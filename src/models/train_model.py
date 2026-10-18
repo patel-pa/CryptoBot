@@ -5,7 +5,7 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sqlalchemy import text
 
-from src.storage.postgres import engine
+from src.storage.postgres import get_engine
 from src.features.build_features import make_features, make_target
 from src.params.constants import (
     SUPPORTED_SYMBOLS,
@@ -22,7 +22,7 @@ def train():
     # 1. Load historical candles (oldest -> newest) from Postgres
     df = pd.read_sql(
         text(f"SELECT * FROM {POSTGRES_TABLE} WHERE symbol = :s ORDER BY open_time"),
-        engine,
+        get_engine(),
         params={"s": SYMBOL},
     )
 
