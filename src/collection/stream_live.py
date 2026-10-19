@@ -3,6 +3,7 @@ import json
 import websocket
 
 from src.params.constants import SUPPORTED_SYMBOLS, DEFAULT_WS_INTERVAL
+from src.storage.mongo import wait_for_mongo
 from src.storage.mongo_writer import save_closed_candle
 from src.utils.url_utils import build_stream_url
 from src.utils.time_utils import ms_to_timestamp
@@ -52,6 +53,7 @@ def on_open(ws):
 
 
 def main():
+    wait_for_mongo()                        # pods start in any order on Kubernetes
     url = build_stream_url(SUPPORTED_SYMBOLS, DEFAULT_WS_INTERVAL)
     ws = websocket.WebSocketApp(
         url,

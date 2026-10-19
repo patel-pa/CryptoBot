@@ -1,8 +1,10 @@
 from functools import lru_cache
 
 from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
 
 from src.config import mongo_settings
+from src.utils.retry import retry
 
 
 @lru_cache(maxsize=1)
@@ -23,10 +25,27 @@ def get_collection(name):
     return get_db()[name]
 
 
+def ping():
+    """Raise ConnectionFailure unless MongoDB answers a ping."""
+    get_db().client.admin.command("ping")
+
+
+def wait_for_mongo(attempts=20, base_delay=1.0, max_delay=10.0):
+    """Block until MongoDB accepts connections; raise after `attempts` tries.
+
+    Same role as wait_for_postgres(): pods start in any order on Kubernetes.
+    Only connection errors are retried (ServerSelectionTimeoutError is one);
+    a missing env var or a wrong password fails immediately.
+    """
+    retry(ping, attempts=attempts, base_delay=base_delay, max_delay=max_delay,
+          exceptions=(ConnectionFailure,), what="MongoDB connection")
+    print("✓ MongoDB reachable", flush=True)
+
+
 def test_connection():
     """Test the MongoDB connection."""
     try:
-        get_db().client.admin.command("ping")
+        ping()
         print("✓ MongoDB connection successful!")
         return True
     except Exception as e:

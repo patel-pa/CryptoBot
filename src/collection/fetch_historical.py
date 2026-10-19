@@ -8,10 +8,12 @@ import requests
 import pandas as pd
 
 from src.config import historical_start_date
+from src.utils.retry import retry
 from src.utils.time_utils import to_ms
 from src.params.constants import BINANCE_KLINES_URL, DEFAULT_REST_INTERVAL
 from src.utils.dataframe_utils import raw_to_dataframe
 
+from src.storage.postgres import wait_for_postgres
 from src.storage.postgres_writer import save_to_postgres, get_last_close_ms
 
 
@@ -33,25 +35,17 @@ def get_binance_data(
     if end_time is not None:
         params["endTime"] = end_time
 
-    # Bounded retry with exponential backoff. A transient network blip, a 429
-    # (rate limit), or a 5xx during the long backfill shouldn't crash the whole
-    # run. This is safe to retry: the outer loop resumes from the last stored
-    # candle, so re-fetching a page never duplicates or skips data.
-    last_error = None
-    for attempt in range(1, 6):                       # up to 5 attempts
-        try:
-            response = requests.get(BINANCE_KLINES_URL, params=params, timeout=10)
-            response.raise_for_status()
-            return response.json()
-        except requests.RequestException as exc:
-            last_error = exc
-            if attempt == 5:
-                break
-            backoff = min(2 ** attempt, 30)           # 2, 4, 8, 16 → capped at 30s
-            print(f"Binance request failed (attempt {attempt}/5): {exc}. "
-                  f"Retrying in {backoff}s…", flush=True)
-            sleep(backoff)
-    raise last_error                                  # exhausted retries — surface it
+    def fetch():
+        response = requests.get(BINANCE_KLINES_URL, params=params, timeout=10)
+        response.raise_for_status()
+        return response.json()
+
+    # A transient network blip, a 429 (rate limit), or a 5xx during the long
+    # backfill shouldn't crash the whole run. Retrying is safe: the outer loop
+    # resumes from the last stored candle, so re-fetching a page never
+    # duplicates or skips data. Waits 2, 4, 8, 16 s between the 5 attempts.
+    return retry(fetch, attempts=5, base_delay=2, max_delay=30,
+                 exceptions=(requests.RequestException,), what="Binance request")
 
 
 SYMBOL = "BTCUSDT"
@@ -59,6 +53,8 @@ SYMBOL = "BTCUSDT"
 # Columns to persist, in the DB's order.
 DB_COLUMNS = ["symbol", "open_time", "open", "high", "low", "close",
               "volume", "close_time", "number_of_trades"]
+
+wait_for_postgres()                         # pods start in any order on Kubernetes
 
 last_close_ms = get_last_close_ms(SYMBOL)
 if last_close_ms is not None:

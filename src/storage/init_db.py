@@ -1,6 +1,6 @@
 from pathlib import Path
-from src.storage.postgres import get_engine
-from src.storage.mongo import get_collection
+from src.storage.postgres import get_engine, wait_for_postgres
+from src.storage.mongo import get_collection, wait_for_mongo
 from src.params.constants import MONGO_COLLECTION, PREDICTIONS_COLLECTION
 
 SCHEMA_FILE = Path(__file__).parent / "schema.sql"
@@ -33,6 +33,10 @@ def init_mongo():
 
 
 def init_db():
+    # Kubernetes starts pods in any order (no Compose `depends_on`), so wait
+    # for both databases before touching them.
+    wait_for_postgres()
+    wait_for_mongo()
     init_postgres()
     init_mongo()
 
