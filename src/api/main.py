@@ -1,11 +1,14 @@
+import asyncio
 import json
 
 import pandas as pd
 import websockets
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from src.storage import mongo, postgres
 from src.storage.postgres import get_engine
 from src.storage.mongo import get_collection
 from src.storage.mongo_writer import save_prediction
@@ -24,11 +27,57 @@ app = FastAPI(title="CryptoBot API")
 
 DEFAULT_SYMBOL = SUPPORTED_SYMBOLS[0].value
 
+# Upper bound for each /ready check. A Kubernetes readiness probe must answer
+# quickly; the probe's own timeout (set in the manifests) is a bit higher.
+READY_TIMEOUT_SECONDS = 2.0
+
 
 @app.get("/health")
 def health():
-    """Quick check that the API is running."""
+    """Liveness: the API process is up.
+
+    Deliberately makes no database calls, so a database outage never makes
+    Kubernetes restart healthy API pods (that is what /ready is for).
+    """
     return {"status": "ok"}
+
+
+async def _check(name, ping):
+    """Run one blocking database ping in a worker thread, with a time limit.
+
+    Returns "ok", "timeout" or "unavailable". Error details go to the log
+    only: /ready may be reachable from outside, and driver error messages
+    can contain internal host names.
+    """
+    try:
+        await asyncio.wait_for(asyncio.to_thread(ping), timeout=READY_TIMEOUT_SECONDS)
+        return "ok"
+    except TimeoutError:
+        print(f"Readiness: {name} did not answer within {READY_TIMEOUT_SECONDS:g}s", flush=True)
+        return "timeout"
+    except Exception as exc:
+        print(f"Readiness: {name} unavailable: {exc!r}", flush=True)
+        return "unavailable"
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness: can the API serve requests right now?
+
+    Pings PostgreSQL and MongoDB in parallel: 200 if both answer, 503
+    otherwise. Kubernetes only sends traffic to ready pods, and leaves an
+    unready pod running (no restart) until its databases are back.
+    """
+    pg_status, mongo_status = await asyncio.gather(
+        _check("postgres", postgres.ping),
+        _check("mongo", mongo.ping),
+    )
+    checks = {"postgres": pg_status, "mongo": mongo_status}
+    is_ready = all(status == "ok" for status in checks.values())
+    return JSONResponse(
+        status_code=200 if is_ready else 503,
+        content={"status": "ready" if is_ready else "not ready", "checks": checks},
+    )
 
 
 @app.get("/charts")
@@ -114,4 +163,4 @@ async def stream(websocket: WebSocket):
                 candle = parse_tick(data["k"])
                 await websocket.send_json(jsonable_encoder(candle))
     except WebSocketDisconnect:
-        pass 
+        pass
