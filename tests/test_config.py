@@ -35,12 +35,24 @@ TRICKY_PASSWORD = "p@ss:w/rd#?%"
 def pg_env(monkeypatch):
     for key, value in PG_ENV.items():
         monkeypatch.setenv(key, value)
+    for key in ("POSTGRES_SSLMODE", "POSTGRES_SSLROOTCERT"):
+        monkeypatch.delenv(key, raising=False)
 
 
 @pytest.fixture
 def mongo_env(monkeypatch):
     for key, value in MONGO_ENV.items():
         monkeypatch.setenv(key, value)
+    for key in ("MONGO_TLS", "MONGO_TLS_CA_FILE"):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture
+def ca_file(tmp_path):
+    """A stand-in CA file. The space in the name must survive URI escaping."""
+    path = tmp_path / "ca bundle.pem"
+    path.write_text("placeholder, not a real certificate")
+    return str(path)
 
 
 def test_postgres_settings_from_env(pg_env):
@@ -99,6 +111,60 @@ def test_mongo_uri_escapes_special_characters(mongo_env, monkeypatch):
     assert parsed["password"] == TRICKY_PASSWORD
     assert parsed["nodelist"] == [("mongo.example.com", 27018)]
     assert parsed["options"]["authSource"] == "admin"
+
+
+def test_mongo_uri_without_tls_is_unchanged(mongo_env):
+    assert parse_uri(config.mongo_settings().uri())["options"] == {"authSource": "admin"}
+
+
+def test_mongo_uri_with_tls_for_documentdb(mongo_env, monkeypatch, ca_file):
+    monkeypatch.setenv("MONGO_TLS", "true")
+    monkeypatch.setenv("MONGO_TLS_CA_FILE", ca_file)
+    options = parse_uri(config.mongo_settings().uri())["options"]
+    assert options["tls"] is True
+    assert options["retryWrites"] is False          # DocumentDB has no retryable writes
+    assert options["tlsCAFile"] == ca_file
+    assert options["authSource"] == "admin"
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("true", True), ("TRUE", True), ("1", True), ("yes", True),
+    ("false", False), ("0", False), ("no", False),
+])
+def test_mongo_tls_flag_values(mongo_env, monkeypatch, raw, expected):
+    monkeypatch.setenv("MONGO_TLS", raw)
+    assert config.mongo_settings().tls is expected
+
+
+def test_invalid_mongo_tls_flag_is_rejected(mongo_env, monkeypatch):
+    monkeypatch.setenv("MONGO_TLS", "maybe")
+    with pytest.raises(EnvironmentError, match="MONGO_TLS"):
+        config.mongo_settings()
+
+
+def test_missing_ca_file_is_rejected(mongo_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("MONGO_TLS_CA_FILE", str(tmp_path / "missing.pem"))
+    with pytest.raises(EnvironmentError, match="MONGO_TLS_CA_FILE"):
+        config.mongo_settings()
+
+
+def test_postgres_url_has_no_ssl_options_by_default(pg_env):
+    assert dict(config.postgres_settings().url().query) == {}
+
+
+def test_postgres_ssl_settings_go_into_the_url(pg_env, monkeypatch, ca_file):
+    monkeypatch.setenv("POSTGRES_SSLMODE", "verify-full")
+    monkeypatch.setenv("POSTGRES_SSLROOTCERT", ca_file)
+    url = config.postgres_settings().url()
+    assert dict(url.query) == {"sslmode": "verify-full", "sslrootcert": ca_file}
+    parsed = make_url(url.render_as_string(hide_password=False))   # survives the string form
+    assert dict(parsed.query) == {"sslmode": "verify-full", "sslrootcert": ca_file}
+
+
+def test_invalid_postgres_sslmode_is_rejected(pg_env, monkeypatch):
+    monkeypatch.setenv("POSTGRES_SSLMODE", "on")
+    with pytest.raises(EnvironmentError, match="POSTGRES_SSLMODE"):
+        config.postgres_settings()
 
 
 def test_passwords_are_not_in_repr(pg_env, mongo_env):
