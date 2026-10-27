@@ -1,20 +1,15 @@
-from pathlib import Path
-
-import joblib
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sqlalchemy import text
 
 from src.storage.postgres import get_engine, wait_for_postgres
 from src.features.build_features import make_features, make_target
+from src.models.model_store import save_model
 from src.params.constants import (
     SUPPORTED_SYMBOLS,
     POSTGRES_TABLE,
-    MODEL_FILENAME,
 )
 
-# Save the trained artifact to the repo's models/ directory
-MODEL_PATH = Path(__file__).resolve().parents[2] / "models" / MODEL_FILENAME
 SYMBOL = SUPPORTED_SYMBOLS[0].value
 
 
@@ -40,10 +35,9 @@ def train():
     model = LinearRegression()
     model.fit(X, y)
 
-    # 5. Save the trained model to disk
-    MODEL_PATH.parent.mkdir(exist_ok=True)
-    joblib.dump(model, MODEL_PATH)
-    print(f"Saved model to {MODEL_PATH} (trained on {len(X)} rows)")
+    # 5. Save the trained model: S3 on AWS, the local models/ folder otherwise
+    location = save_model(model)
+    print(f"Saved model to {location} (trained on {len(X)} rows)")
 
 
 if __name__ == "__main__":

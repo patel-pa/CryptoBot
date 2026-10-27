@@ -8,20 +8,25 @@ database it actually uses (the streamer never needs Postgres credentials).
 Locally, a .env file in the repo root is loaded if present. docker compose and
 Kubernetes pass real environment variables instead.
 """
+import math
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import quote, quote_plus, urlencode
 
 from dotenv import load_dotenv
 from sqlalchemy.engine import URL
 
-from src.params.constants import HISTORICAL_START_DATE
+from src.params.constants import HISTORICAL_START_DATE, MODEL_FILENAME
 
 load_dotenv()   # no-op when there is no .env; never overrides real env vars
 
 # libpq's sslmode values; RDS for PostgreSQL requires SSL, so on AWS use
 # "require" (encrypted) or "verify-full" (encrypted + server certificate checked).
 POSTGRES_SSL_MODES = ("disable", "allow", "prefer", "require", "verify-ca", "verify-full")
+
+# Local model file (docker compose, kind): <repo>/models/model.pkl
+LOCAL_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / MODEL_FILENAME
 
 
 def _require(names):
@@ -149,6 +154,34 @@ def mongo_settings():
         db=env["MONGO_DB"],
         tls=_flag("MONGO_TLS"),
         tls_ca_file=_file("MONGO_TLS_CA_FILE"),
+    )
+
+
+@dataclass(frozen=True)
+class ModelSettings:
+    s3_bucket: str | None                # None = local file (docker compose, kind)
+    s3_key: str                          # object key in the bucket, e.g. dev/model.pkl
+    local_path: Path                     # the model file when there is no bucket
+    check_interval_seconds: float        # how often the API looks for a newer model
+
+
+def model_settings():
+    """Where the trained model lives: S3 when MODEL_S3_BUCKET is set, else a local file."""
+    interval = 60.0
+    raw = os.getenv("MODEL_CHECK_INTERVAL_SECONDS")
+    if raw:
+        try:
+            interval = float(raw)
+        except ValueError:
+            interval = -1.0              # reported by the check below
+        if not 0 <= interval < math.inf:  # also rejects "nan" and "inf", which float() accepts
+            raise EnvironmentError(
+                f"MODEL_CHECK_INTERVAL_SECONDS must be a number of seconds >= 0, got {raw!r}")
+    return ModelSettings(
+        s3_bucket=os.getenv("MODEL_S3_BUCKET") or None,
+        s3_key=os.getenv("MODEL_S3_KEY") or MODEL_FILENAME,
+        local_path=LOCAL_MODEL_PATH,
+        check_interval_seconds=interval,
     )
 
 

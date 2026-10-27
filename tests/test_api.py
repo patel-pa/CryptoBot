@@ -1,17 +1,20 @@
-"""Tests for /health (liveness) and /ready (readiness) in src/api/main.py.
+"""Tests for /health (liveness), /ready (readiness) and /predict without a
+model, in src/api/main.py.
 
 The endpoint functions are called directly, so no HTTP client library is
-needed; the database pings are replaced by fakes.
+needed; the database pings and the prediction are replaced by fakes.
 """
 import asyncio
 import json
 import time
 
 import pytest
+from fastapi import HTTPException
 from pymongo.errors import ServerSelectionTimeoutError
 from sqlalchemy.exc import OperationalError
 
 import src.api.main as api
+from src.models.model_store import ModelUnavailable
 from src.storage import mongo, postgres
 
 
@@ -107,3 +110,13 @@ def test_checks_run_in_parallel(pings):
     status, _, elapsed = call_ready()
     assert status == 200
     assert elapsed < 0.9               # one after the other would take 1.0 s
+
+
+def test_predict_without_a_model_is_503_without_details(monkeypatch):
+    def no_model(symbol):
+        raise ModelUnavailable("no model at s3://secret-bucket/dev/model.pkl")
+    monkeypatch.setattr(api, "predict_next_close_detailed", no_model)
+    with pytest.raises(HTTPException) as exc:
+        api.predict()
+    assert exc.value.status_code == 503
+    assert "secret-bucket" not in exc.value.detail

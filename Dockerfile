@@ -16,7 +16,8 @@ WORKDIR /app
 COPY requirements-docker.txt .
 RUN pip install --no-cache-dir -r requirements-docker.txt
 
-# Copy the rest of the project (source code + the trained models/model.pkl).
+# Copy the rest of the project (source code). The trained model is NOT baked in
+# (.dockerignore): it comes from S3 on AWS, or the shared models volume locally.
 COPY . .
 
 # Default command — overridden per service in docker-compose.yml.

@@ -100,6 +100,9 @@ cryptobot_timeline*
 .env
 
 
+# Trained models are build output, not source: S3 on AWS, a local file otherwise.
+models/*.pkl
+
 # Keep the ENTIRE references/ directory LOCAL only — phase reports, defense
 # deck, course notes stay on disk but are never pushed to the CV repo.
 /references/

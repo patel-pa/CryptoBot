@@ -24,6 +24,7 @@ joblib==1.5.3
 requests==2.34.0
 websocket-client==1.9.0
 python-dotenv==1.2.2
+boto3==1.43.117              # AWS SDK: model upload/download in S3 (Task 5)
 
 # --- Dashboard ---
 streamlit==1.58.0

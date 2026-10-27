@@ -1,18 +1,15 @@
 from datetime import timedelta
-from pathlib import Path
 
-import joblib
 import pandas as pd
 
 from src.storage.mongo import get_collection
 from src.features.build_features import make_features
+from src.models.model_store import load_model
 from src.params.constants import (
     SUPPORTED_SYMBOLS,
     MONGO_COLLECTION,
-    MODEL_FILENAME,
 )
 
-MODEL_PATH = Path(__file__).resolve().parents[2] / "models" / MODEL_FILENAME
 SYMBOL = SUPPORTED_SYMBOLS[0].value
 
 # How far ahead the "next" candle is, per Binance interval string.
@@ -27,8 +24,8 @@ def predict_next_close_detailed(symbol=SYMBOL, n=1):
       - target_kline_start_time : the candle being predicted (input + 1 interval)
       - predicted_close         : the model's forecast
     """
-    # 1. Load the trained model
-    model = joblib.load(MODEL_PATH)
+    # 1. The trained model (cached; reloaded only when a newer one was saved)
+    model = load_model()
 
     # 2. Get the last N completed candles from Mongo (newest first)
     col = get_collection(MONGO_COLLECTION)

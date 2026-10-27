@@ -179,6 +179,35 @@ def test_historical_start_date_default_and_override(monkeypatch):
     assert config.historical_start_date() == "15.10.2026T00:00"
 
 
+@pytest.fixture
+def no_model_env(monkeypatch):
+    for key in ("MODEL_S3_BUCKET", "MODEL_S3_KEY", "MODEL_CHECK_INTERVAL_SECONDS"):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_model_settings_default_to_the_local_file(no_model_env):
+    s = config.model_settings()
+    assert s.s3_bucket is None
+    assert s.s3_key == "model.pkl"
+    assert s.local_path == REPO_ROOT / "models" / "model.pkl"
+    assert s.check_interval_seconds == 60
+
+
+def test_model_settings_for_s3(no_model_env, monkeypatch):
+    monkeypatch.setenv("MODEL_S3_BUCKET", "cryptobot-models")
+    monkeypatch.setenv("MODEL_S3_KEY", "dev/model.pkl")
+    monkeypatch.setenv("MODEL_CHECK_INTERVAL_SECONDS", "5")
+    s = config.model_settings()
+    assert (s.s3_bucket, s.s3_key, s.check_interval_seconds) == ("cryptobot-models", "dev/model.pkl", 5)
+
+
+@pytest.mark.parametrize("raw", ["soon", "-1", "nan", "inf"])
+def test_invalid_model_check_interval_is_rejected(no_model_env, monkeypatch, raw):
+    monkeypatch.setenv("MODEL_CHECK_INTERVAL_SECONDS", raw)
+    with pytest.raises(EnvironmentError, match="MODEL_CHECK_INTERVAL_SECONDS"):
+        config.model_settings()
+
+
 def test_importing_the_app_needs_no_db_env_vars():
     """Every module imports cleanly without any DB settings (they're read lazily).
 

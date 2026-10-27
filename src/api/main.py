@@ -19,6 +19,7 @@ from src.params.constants import (
     MONGO_COLLECTION,
     PREDICTIONS_COLLECTION,
 )
+from src.models.model_store import ModelUnavailable
 from src.models.predict_model import predict_next_close_detailed
 from src.utils.url_utils import build_stream_url
 from src.collection.stream_live import parse_tick
@@ -97,10 +98,14 @@ def predict(symbol: str = DEFAULT_SYMBOL):
     """Predicted close of the next candle, from the latest candle in Mongo.
 
     The forecast is also persisted (upsert) so /predictions can chart the
-    predicted-vs-actual history later.
+    predicted-vs-actual history later. Without a trained model this returns
+    503; /ready is not affected, because /charts and /predictions still work.
     """
     try:
         result = predict_next_close_detailed(symbol=symbol)
+    except ModelUnavailable as e:
+        print(f"/predict: {e}", flush=True)       # details (bucket, path) to the log only
+        raise HTTPException(status_code=503, detail="No trained model is available yet.")
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     save_prediction(result)
