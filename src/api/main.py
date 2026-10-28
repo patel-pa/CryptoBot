@@ -93,13 +93,15 @@ def charts(symbol: str = DEFAULT_SYMBOL, limit: int = 100):
     return records[::-1]  # reverse DESC fetch back into chronological order
 
 
-@app.get("/predict")
+@app.post("/predict")
 def predict(symbol: str = DEFAULT_SYMBOL):
-    """Predicted close of the next candle, from the latest candle in Mongo.
+    """Forecast the close of the next candle, from the latest candle in Mongo.
 
-    The forecast is also persisted (upsert) so /predictions can chart the
-    predicted-vs-actual history later. Without a trained model this returns
-    503; /ready is not affected, because /charts and /predictions still work.
+    POST because it writes: the forecast is stored (upsert, one per target
+    candle) so /predictions can chart predicted vs actual. The streamer calls
+    this after each closed candle; readers use GET /predictions. Without a
+    trained model this returns 503; /ready is not affected, because /charts
+    and /predictions still work.
     """
     try:
         result = predict_next_close_detailed(symbol=symbol)

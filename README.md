@@ -125,7 +125,7 @@ docker compose run --rm api python -m src.collection.fetch_historical   # backfi
 | `/health` | GET | — | Liveness: the API process is up (no database calls) |
 | `/ready` | GET | PostgreSQL + MongoDB | Readiness: 200 if both databases answer, else 503 |
 | `/charts` | GET | PostgreSQL | Historical OHLCV for charting |
-| `/predict` | GET | MongoDB + model | Next-candle close forecast (also persisted) |
+| `/predict` | POST | MongoDB + model | Forecasts the next candle's close and stores it; the streamer calls it after each closed candle |
 | `/predictions` | GET | MongoDB | Stored forecasts joined with actual closes (predicted-vs-actual) |
 | `/stream` | WebSocket | Binance (live) | Real-time tick feed relayed to the browser |
 

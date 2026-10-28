@@ -11,7 +11,8 @@ draws that data on the page. Streamlit handles all the web/HTML/JS for us.
 The main chart merges three things into ONE Binance-style candlestick view:
   • historical 1-minute candles      (from /charts  -> PostgreSQL)
   • live 1-minute candles forming now (from /stream -> Binance WebSocket)
-  • the model's next-candle forecast  (from /predict -> model + MongoDB)
+  • the model's next-candle forecast  (from /predictions -> MongoDB; the
+                                       streamer requests one per closed candle)
 
 HOW TO RUN
 ----------
@@ -102,15 +103,20 @@ def fetch_charts(symbol: str, limit: int) -> pd.DataFrame:
     return df
 
 
-# /predict is the expensive one: it loads the model, reads Mongo AND upserts the
-# forecast. The upsert is keyed by target candle, so 6 calls/min store exactly
-# the same history as 60 would — caching costs no data, only load.
+# The dashboard only READS forecasts: the streamer asks the API for one each
+# time a candle closes (POST /predict), so they exist with no dashboard open.
 @st.cache_data(ttl=10)
-def fetch_prediction(symbol: str) -> float:
-    """GET /predict -> the model's forecast for the next candle's close."""
-    response = requests.get(f"{API_BASE}/predict", params={"symbol": symbol}, timeout=10)
+def fetch_latest_forecast(symbol: str):
+    """GET /predictions?limit=1 -> the newest stored forecast, or None if none yet.
+
+    A dict: target_time (the candle it is for), predicted_close, actual_close.
+    """
+    response = requests.get(
+        f"{API_BASE}/predictions", params={"symbol": symbol, "limit": 1}, timeout=10
+    )
     response.raise_for_status()
-    return response.json()["predicted_next_close"]
+    rows = response.json()
+    return rows[-1] if rows else None
 
 
 # Joins up to 240 Mongo documents; the stored history only grows one row a minute.
@@ -275,14 +281,20 @@ def merged_chart():
     c1, c2, c3 = st.columns(3)
     c1.metric("Latest close", f"${last_close:,.2f}")
 
-    predicted = None
+    forecast = None
     try:
-        predicted = fetch_prediction(symbol)
-        c2.metric("Predicted next close", f"${predicted:,.2f}",
-                  delta=f"{predicted - last_close:,.2f}")
+        forecast = fetch_latest_forecast(symbol)
     except requests.RequestException:
-        # /predict needs a recent candle in MongoDB (run stream_live.py to fill it).
-        c2.metric("Predicted next close", "unavailable")
+        pass                                 # shown as "unavailable" below
+    if forecast is None:
+        # None yet: needs a trained model and a candle closed since the streamer started.
+        c2.metric("Predicted close", "unavailable")
+    else:
+        predicted = forecast["predicted_close"]
+        target_time = pd.to_datetime(forecast["target_time"])
+        # The label names the candle the forecast is for, so an old one is obvious.
+        c2.metric(f"Predicted close, {target_time.strftime('%H:%M')} candle",
+                  f"${predicted:,.2f}", delta=f"{predicted - last_close:,.2f}")
     c3.metric("Live candles collected", f"{len(live_df)}")
 
     # --- 5) DRAW the merged candlestick --------------------------------------
@@ -301,18 +313,20 @@ def merged_chart():
         name=symbol,
     ))
 
-    # --- 6) PREDICTION: dashed line + marker one candle into the FUTURE ------
-    if predicted is not None:
-        last_time = combined["open_time"].iloc[-1]
-        pred_label = (last_time + pd.Timedelta(minutes=1)).strftime("%m-%d %H:%M")
-        fig.add_trace(go.Scatter(
-            x=[labels.iloc[-1], pred_label],
-            y=[last_close, predicted],
-            mode="lines+markers",
-            line=dict(color="#f5b041", dash="dash"),
-            marker=dict(size=11, symbol="diamond", color="#f5b041"),
-            name="next-candle forecast",
-        ))
+    # --- 6) FORECAST: dashed line + marker on the candle it is FOR -----------
+    # From the close of the candle before the target (the forecast's input) to
+    # the predicted close at the target, normally the candle forming right now.
+    if forecast is not None:
+        before = combined[combined["open_time"] < target_time]
+        if not before.empty:                 # skip a forecast older than the chart
+            fig.add_trace(go.Scatter(
+                x=[labels.loc[before.index[-1]], target_time.strftime("%m-%d %H:%M")],
+                y=[before["close"].iloc[-1], predicted],
+                mode="lines+markers",
+                line=dict(color="#f5b041", dash="dash"),
+                marker=dict(size=11, symbol="diamond", color="#f5b041"),
+                name="next-candle forecast",
+            ))
 
     fig.update_layout(
         template="plotly_dark",

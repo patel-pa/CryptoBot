@@ -1,5 +1,5 @@
-"""Tests for /health (liveness), /ready (readiness) and /predict without a
-model, in src/api/main.py.
+"""Tests for /health (liveness), /ready (readiness) and /predict, in
+src/api/main.py.
 
 The endpoint functions are called directly, so no HTTP client library is
 needed; the database pings and the prediction are replaced by fakes.
@@ -7,6 +7,7 @@ needed; the database pings and the prediction are replaced by fakes.
 import asyncio
 import json
 import time
+from datetime import datetime
 
 import pytest
 from fastapi import HTTPException
@@ -110,6 +111,25 @@ def test_checks_run_in_parallel(pings):
     status, _, elapsed = call_ready()
     assert status == 200
     assert elapsed < 0.9               # one after the other would take 1.0 s
+
+
+def test_predict_accepts_post_only():
+    methods = {method for route in api.app.routes if getattr(route, "path", None) == "/predict"
+               for method in route.methods}
+    assert methods == {"POST"}          # it writes; GET /predict answers 405 Method Not Allowed
+
+
+def test_predict_stores_and_returns_the_forecast(monkeypatch):
+    result = {"symbol": "BTCUSDT",
+              "source_kline_start_time": datetime(2026, 10, 27, 14, 30),
+              "target_kline_start_time": datetime(2026, 10, 27, 14, 31),
+              "predicted_close": 67000.5}
+    saved = []
+    monkeypatch.setattr(api, "predict_next_close_detailed", lambda symbol: result)
+    monkeypatch.setattr(api, "save_prediction", saved.append)
+    assert api.predict() == {"symbol": "BTCUSDT", "predicted_next_close": 67000.5,
+                             "target_time": datetime(2026, 10, 27, 14, 31)}
+    assert saved == [result]
 
 
 def test_predict_without_a_model_is_503_without_details(monkeypatch):

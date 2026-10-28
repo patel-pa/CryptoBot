@@ -179,6 +179,19 @@ def test_historical_start_date_default_and_override(monkeypatch):
     assert config.historical_start_date() == "15.10.2026T00:00"
 
 
+def test_api_base_url_default_and_override(monkeypatch):
+    monkeypatch.delenv("API_BASE", raising=False)
+    assert config.api_base_url() == "http://localhost:8000"
+    monkeypatch.setenv("API_BASE", "http://api:8000/")
+    assert config.api_base_url() == "http://api:8000"        # trailing slash removed
+
+
+def test_api_base_url_without_scheme_is_rejected(monkeypatch):
+    monkeypatch.setenv("API_BASE", "api:8000")
+    with pytest.raises(EnvironmentError, match="API_BASE"):
+        config.api_base_url()
+
+
 @pytest.fixture
 def no_model_env(monkeypatch):
     for key in ("MODEL_S3_BUCKET", "MODEL_S3_KEY", "MODEL_CHECK_INTERVAL_SECONDS"):

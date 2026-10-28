@@ -185,6 +185,18 @@ def model_settings():
     )
 
 
+def api_base_url():
+    """Base URL of the CryptoBot API, without a trailing slash.
+
+    The streamer calls POST {API_BASE}/predict after each closed candle.
+    docker compose sets http://api:8000; on Kubernetes it is the API Service.
+    """
+    url = (os.getenv("API_BASE") or "http://localhost:8000").rstrip("/")
+    if not url.startswith(("http://", "https://")):
+        raise EnvironmentError(f"API_BASE must start with http:// or https://, got {url!r}")
+    return url
+
+
 def historical_start_date():
     """Where an EMPTY database starts its backfill ('DD.MM.YYYYThh:mm').
 
