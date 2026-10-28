@@ -1,5 +1,6 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 
 import requests
 import websocket
@@ -18,10 +19,17 @@ from src.utils.time_utils import ms_to_timestamp
 ATTEMPTS = 3
 PREDICT_TIMEOUT = (3, 10)        # seconds: (connect to the API, wait for its answer)
 
-# One worker thread handles closed candles, in order. The WebSocket loop only
-# hands them over: if it waited for a slow database or API, it could not read
-# the keepalive pong in time, and the connection would be dropped and reopened.
-closed_candle_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="closed-candle")
+
+@lru_cache(maxsize=1)
+def closed_candle_worker():
+    """The one worker thread that handles closed candles, in order.
+
+    The WebSocket loop only hands candles over: if it waited for a slow
+    database or API, it could not read the keepalive pong in time, and the
+    connection would be dropped and reopened. Created on first use, so
+    importing this module (the API imports parse_tick) creates nothing.
+    """
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="closed-candle")
 
 
 def parse_tick(k):
@@ -65,7 +73,7 @@ def on_candle_closed(candle):
 
     The ONE place that reacts to a closed candle, so the direct API call can
     later be swapped for a queue message (SQS) without touching the
-    WebSocket code. Runs on closed_candle_worker. Never raises: failures are
+    WebSocket code. Runs on closed_candle_worker(). Never raises: failures are
     logged and the stream goes on.
     """
     symbol, start = candle["symbol"], candle["kline_start_time"]
@@ -100,7 +108,7 @@ def on_message(ws, message):
     # Path B: only completed candles are stored, and each one triggers a forecast
     # (on the worker thread, so this loop goes straight back to reading).
     if candle["is_candle_closed"]:
-        closed_candle_worker.submit(on_candle_closed, candle)
+        closed_candle_worker().submit(on_candle_closed, candle)
 
 
 def on_error(ws, error):
@@ -116,10 +124,11 @@ def on_open(ws):
 
 
 def main():
-    wait_for_mongo()                        # pods start in any order on Kubernetes
-    # Fails fast on a malformed API_BASE. The API itself may still be starting:
-    # the stream runs anyway, forecasts begin as soon as the API answers.
+    # Fails fast on a malformed API_BASE, before waiting for MongoDB. The API
+    # itself may still be starting: the stream runs anyway, and forecasts
+    # begin as soon as the API answers.
     print(f"Forecasts: POST {api_base_url()}/predict after each closed candle", flush=True)
+    wait_for_mongo()                        # pods start in any order on Kubernetes
     url = build_stream_url(SUPPORTED_SYMBOLS, DEFAULT_WS_INTERVAL)
     ws = websocket.WebSocketApp(
         url,

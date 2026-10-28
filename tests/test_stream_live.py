@@ -4,7 +4,10 @@ MongoDB and the API are replaced by fakes, and the retry waits are recorded
 instead of slept, so no database, API or network is needed.
 """
 import json
+import subprocess
+import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +17,7 @@ from pymongo.errors import AutoReconnect
 import src.collection.stream_live as stream_live
 import src.utils.retry as retry_module
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 API = "http://api.test:8000"
 FORECAST = {"symbol": "BTCUSDT", "predicted_next_close": 106.5,
             "target_time": "1970-01-01T00:02:00"}
@@ -42,7 +46,7 @@ def receive(msg):
     submitted after the message has run, the message's work is finished.
     """
     stream_live.on_message(None, msg)
-    stream_live.closed_candle_worker.submit(lambda: None).result(timeout=5)
+    stream_live.closed_candle_worker().submit(lambda: None).result(timeout=5)
 
 
 def api_response(status, body):
@@ -165,3 +169,24 @@ def test_slow_api_is_not_retried(fakes):
     stream_live.on_candle_closed(closed_candle())     # the API may still store it
     assert fakes.calls == ["save", "post"]
     assert fakes.waits == []
+
+
+def test_bad_api_base_fails_before_waiting_for_mongo(monkeypatch):
+    waited = []
+    monkeypatch.setattr(stream_live, "wait_for_mongo", lambda: waited.append(True))
+    monkeypatch.setenv("API_BASE", "api:8000")
+    with pytest.raises(EnvironmentError, match="API_BASE"):
+        stream_live.main()
+    assert waited == []                                # failed at once, no MongoDB wait
+
+
+def test_importing_creates_no_worker():
+    """The API imports parse_tick from this module; that must not create the worker.
+
+    Runs in a fresh interpreter: tests in this process have already created it.
+    """
+    code = ("import src.api.main, src.collection.stream_live as s; "
+            "assert s.closed_candle_worker.cache_info().currsize == 0")
+    result = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT,
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
