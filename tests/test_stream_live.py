@@ -16,6 +16,7 @@ from pymongo.errors import AutoReconnect
 
 import src.collection.stream_live as stream_live
 import src.utils.retry as retry_module
+from src.config import ConfigError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 API = "http://api.test:8000"
@@ -175,7 +176,7 @@ def test_bad_api_base_fails_before_waiting_for_mongo(monkeypatch):
     waited = []
     monkeypatch.setattr(stream_live, "wait_for_mongo", lambda: waited.append(True))
     monkeypatch.setenv("API_BASE", "api:8000")
-    with pytest.raises(EnvironmentError, match="API_BASE"):
+    with pytest.raises(ConfigError, match="API_BASE"):
         stream_live.main()
     assert waited == []                                # failed at once, no MongoDB wait
 

@@ -6,6 +6,7 @@ from pymongo.errors import ServerSelectionTimeoutError
 from sqlalchemy.exc import OperationalError
 
 import src.utils.retry as retry_module
+from src.config import ConfigError
 from src.storage import mongo, postgres
 from src.utils.retry import retry
 
@@ -97,9 +98,9 @@ def test_wait_for_postgres_gives_up(monkeypatch, no_sleep):
 
 def test_wait_for_postgres_fails_fast_on_config_errors(monkeypatch, no_sleep):
     def ping():
-        raise EnvironmentError("Missing environment variables: POSTGRES_HOST")
+        raise ConfigError("Missing environment variables: POSTGRES_HOST")
     monkeypatch.setattr(postgres, "ping", ping)
-    with pytest.raises(EnvironmentError):
+    with pytest.raises(ConfigError):
         postgres.wait_for_postgres(attempts=5)
     assert no_sleep == []
 

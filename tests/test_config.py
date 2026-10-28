@@ -64,7 +64,7 @@ def test_postgres_settings_from_env(pg_env):
 def test_missing_postgres_vars_are_all_listed(monkeypatch):
     for key in PG_ENV:
         monkeypatch.delenv(key, raising=False)
-    with pytest.raises(EnvironmentError) as exc:
+    with pytest.raises(config.ConfigError) as exc:
         config.postgres_settings()
     message = str(exc.value)
     for key in ("POSTGRES_HOST", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"):
@@ -74,8 +74,13 @@ def test_missing_postgres_vars_are_all_listed(monkeypatch):
 
 def test_empty_value_counts_as_missing(pg_env, monkeypatch):
     monkeypatch.setenv("POSTGRES_PASSWORD", "")
-    with pytest.raises(EnvironmentError, match="POSTGRES_PASSWORD"):
+    with pytest.raises(config.ConfigError, match="POSTGRES_PASSWORD"):
         config.postgres_settings()
+
+
+def test_config_errors_are_not_os_errors():
+    """`except OSError` (file and network problems) must never swallow a config error."""
+    assert not issubclass(config.ConfigError, OSError)
 
 
 def test_mongo_settings_do_not_need_postgres_vars(mongo_env, monkeypatch):
@@ -93,7 +98,7 @@ def test_ports_default_when_unset(pg_env, mongo_env, monkeypatch):
 
 def test_invalid_port_is_rejected(pg_env, monkeypatch):
     monkeypatch.setenv("POSTGRES_PORT", "abc")
-    with pytest.raises(EnvironmentError, match="POSTGRES_PORT"):
+    with pytest.raises(config.ConfigError, match="POSTGRES_PORT"):
         config.postgres_settings()
 
 
@@ -138,13 +143,13 @@ def test_mongo_tls_flag_values(mongo_env, monkeypatch, raw, expected):
 
 def test_invalid_mongo_tls_flag_is_rejected(mongo_env, monkeypatch):
     monkeypatch.setenv("MONGO_TLS", "maybe")
-    with pytest.raises(EnvironmentError, match="MONGO_TLS"):
+    with pytest.raises(config.ConfigError, match="MONGO_TLS"):
         config.mongo_settings()
 
 
 def test_missing_ca_file_is_rejected(mongo_env, monkeypatch, tmp_path):
     monkeypatch.setenv("MONGO_TLS_CA_FILE", str(tmp_path / "missing.pem"))
-    with pytest.raises(EnvironmentError, match="MONGO_TLS_CA_FILE"):
+    with pytest.raises(config.ConfigError, match="MONGO_TLS_CA_FILE"):
         config.mongo_settings()
 
 
@@ -163,7 +168,7 @@ def test_postgres_ssl_settings_go_into_the_url(pg_env, monkeypatch, ca_file):
 
 def test_invalid_postgres_sslmode_is_rejected(pg_env, monkeypatch):
     monkeypatch.setenv("POSTGRES_SSLMODE", "on")
-    with pytest.raises(EnvironmentError, match="POSTGRES_SSLMODE"):
+    with pytest.raises(config.ConfigError, match="POSTGRES_SSLMODE"):
         config.postgres_settings()
 
 
@@ -188,7 +193,7 @@ def test_api_base_url_default_and_override(monkeypatch):
 
 def test_api_base_url_without_scheme_is_rejected(monkeypatch):
     monkeypatch.setenv("API_BASE", "api:8000")
-    with pytest.raises(EnvironmentError, match="API_BASE"):
+    with pytest.raises(config.ConfigError, match="API_BASE"):
         config.api_base_url()
 
 
@@ -217,7 +222,7 @@ def test_model_settings_for_s3(no_model_env, monkeypatch):
 @pytest.mark.parametrize("raw", ["soon", "-1", "nan", "inf"])
 def test_invalid_model_check_interval_is_rejected(no_model_env, monkeypatch, raw):
     monkeypatch.setenv("MODEL_CHECK_INTERVAL_SECONDS", raw)
-    with pytest.raises(EnvironmentError, match="MODEL_CHECK_INTERVAL_SECONDS"):
+    with pytest.raises(config.ConfigError, match="MODEL_CHECK_INTERVAL_SECONDS"):
         config.model_settings()
 
 

@@ -29,12 +29,20 @@ POSTGRES_SSL_MODES = ("disable", "allow", "prefer", "require", "verify-ca", "ver
 LOCAL_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / MODEL_FILENAME
 
 
+class ConfigError(Exception):
+    """A setting is missing or invalid (environment variable or .env file).
+
+    Its own type, so it is never mistaken for a file or network error
+    (EnvironmentError, used before, is only an old name for OSError).
+    """
+
+
 def _require(names):
     """Return {name: value} for env vars that must be set; list all missing ones."""
     values = {name: os.getenv(name) for name in names}
     missing = [name for name, value in values.items() if not value]
     if missing:
-        raise EnvironmentError(
+        raise ConfigError(
             f"Missing environment variables: {', '.join(missing)}. "
             "Set them in the environment or in a .env file (see .env.example)."
         )
@@ -49,7 +57,7 @@ def _port(name, default):
     try:
         return int(raw)
     except ValueError:
-        raise EnvironmentError(f"{name} must be a port number, got {raw!r}") from None
+        raise ConfigError(f"{name} must be a port number, got {raw!r}") from None
 
 
 def _flag(name, default=False):
@@ -62,14 +70,14 @@ def _flag(name, default=False):
         return True
     if value in ("false", "0", "no"):
         return False
-    raise EnvironmentError(f"{name} must be true or false, got {raw!r}")
+    raise ConfigError(f"{name} must be true or false, got {raw!r}")
 
 
 def _file(name):
     """Read an optional file path; if it is set, the file must exist."""
     path = os.getenv(name) or None
     if path and not os.path.isfile(path):
-        raise EnvironmentError(f"{name} points to {path!r}, which is not a file")
+        raise ConfigError(f"{name} points to {path!r}, which is not a file")
     return path
 
 
@@ -131,7 +139,7 @@ def postgres_settings():
     env = _require(["POSTGRES_HOST", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"])
     sslmode = os.getenv("POSTGRES_SSLMODE") or None
     if sslmode and sslmode not in POSTGRES_SSL_MODES:
-        raise EnvironmentError(
+        raise ConfigError(
             f"POSTGRES_SSLMODE must be one of {', '.join(POSTGRES_SSL_MODES)}, got {sslmode!r}")
     return PostgresSettings(
         host=env["POSTGRES_HOST"],
@@ -175,7 +183,7 @@ def model_settings():
         except ValueError:
             interval = -1.0              # reported by the check below
         if not 0 <= interval < math.inf:  # also rejects "nan" and "inf", which float() accepts
-            raise EnvironmentError(
+            raise ConfigError(
                 f"MODEL_CHECK_INTERVAL_SECONDS must be a number of seconds >= 0, got {raw!r}")
     return ModelSettings(
         s3_bucket=os.getenv("MODEL_S3_BUCKET") or None,
@@ -193,7 +201,7 @@ def api_base_url():
     """
     url = (os.getenv("API_BASE") or "http://localhost:8000").rstrip("/")
     if not url.startswith(("http://", "https://")):
-        raise EnvironmentError(f"API_BASE must start with http:// or https://, got {url!r}")
+        raise ConfigError(f"API_BASE must start with http:// or https://, got {url!r}")
     return url
 
 
