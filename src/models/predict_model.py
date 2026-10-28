@@ -2,13 +2,13 @@ from datetime import timedelta
 
 import pandas as pd
 
-from src.storage.mongo import get_collection
 from src.features.build_features import make_features
 from src.models.model_store import load_model
 from src.params.constants import (
-    SUPPORTED_SYMBOLS,
     MONGO_COLLECTION,
+    SUPPORTED_SYMBOLS,
 )
+from src.storage.mongo import get_collection
 
 SYMBOL = SUPPORTED_SYMBOLS[0].value
 

@@ -1,0 +1,6 @@
+# Development and CI tools only: NOT installed in the Docker image.
+#   pip install -r requirements-docker.txt -r requirements-dev.txt
+# Settings for the tools are in pyproject.toml.
+
+ruff==0.17.3         # linter (replaces flake8; CI switches over in Week 3)
+pytest==9.2.0        # test runner

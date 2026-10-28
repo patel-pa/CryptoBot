@@ -2,13 +2,13 @@ import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sqlalchemy import text
 
-from src.storage.postgres import get_engine, wait_for_postgres
 from src.features.build_features import make_features, make_target
 from src.models.model_store import save_model
 from src.params.constants import (
-    SUPPORTED_SYMBOLS,
     POSTGRES_TABLE,
+    SUPPORTED_SYMBOLS,
 )
+from src.storage.postgres import get_engine, wait_for_postgres
 
 SYMBOL = SUPPORTED_SYMBOLS[0].value
 

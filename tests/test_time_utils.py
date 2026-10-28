@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.utils.time_utils import to_ms, ms_to_timestamp
+from src.utils.time_utils import ms_to_timestamp, to_ms
 
 
 def test_to_ms_epoch():

@@ -7,12 +7,12 @@ import websocket
 from pymongo.errors import ConnectionFailure
 
 from src.config import api_base_url
-from src.params.constants import SUPPORTED_SYMBOLS, DEFAULT_WS_INTERVAL
+from src.params.constants import DEFAULT_WS_INTERVAL, SUPPORTED_SYMBOLS
 from src.storage.mongo import wait_for_mongo
 from src.storage.mongo_writer import save_closed_candle
 from src.utils.retry import retry
-from src.utils.url_utils import build_stream_url
 from src.utils.time_utils import ms_to_timestamp
+from src.utils.url_utils import build_stream_url
 
 # Candles close once a minute: with 3 tries (waits 1 s, 2 s) and short request
 # timeouts, one candle's work is done well before the next one closes.

@@ -26,16 +26,16 @@ REQUIRES (install once):
        pip install streamlit plotly requests
 """
 
-import json                          # to decode the JSON ticks the stream sends
-import os                            # to read configuration (API_BASE) from the environment
-import time                          # small back-off pause before reconnecting the stream
-import threading                     # run the live stream in the background, off the UI thread
+import json  # to decode the JSON ticks the stream sends
+import os  # to read configuration (API_BASE) from the environment
+import threading  # run the live stream in the background, off the UI thread
+import time  # small back-off pause before reconnecting the stream
 
-import requests                      # to call our FastAPI endpoints over HTTP
-import pandas as pd                  # to hold the candle data in a table
-import streamlit as st              # the dashboard framework
-import plotly.graph_objects as go    # to draw an interactive candlestick chart
-import websocket                     # websocket-client (sync) — same lib as stream_live.py
+import pandas as pd  # to hold the candle data in a table
+import plotly.graph_objects as go  # to draw an interactive candlestick chart
+import requests  # to call our FastAPI endpoints over HTTP
+import streamlit as st  # the dashboard framework
+import websocket  # websocket-client (sync) — same lib as stream_live.py
 
 # --- Avoid a pandas 3.0 + pyarrow segfault --------------------------------
 # pandas 3.0 defaults string columns to a PyArrow-backed dtype whose

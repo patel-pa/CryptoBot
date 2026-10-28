@@ -1,7 +1,8 @@
 from pathlib import Path
-from src.storage.postgres import get_engine, wait_for_postgres
-from src.storage.mongo import get_collection, wait_for_mongo
+
 from src.params.constants import MONGO_COLLECTION, PREDICTIONS_COLLECTION
+from src.storage.mongo import get_collection, wait_for_mongo
+from src.storage.postgres import get_engine, wait_for_postgres
 
 SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 

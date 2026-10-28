@@ -8,21 +8,21 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from src.storage import mongo, postgres
-from src.storage.postgres import get_engine
-from src.storage.mongo import get_collection
-from src.storage.mongo_writer import save_prediction
-from src.params.constants import (
-    POSTGRES_TABLE,
-    SUPPORTED_SYMBOLS,
-    DEFAULT_WS_INTERVAL,
-    MONGO_COLLECTION,
-    PREDICTIONS_COLLECTION,
-)
+from src.collection.stream_live import parse_tick
 from src.models.model_store import ModelUnavailable
 from src.models.predict_model import predict_next_close_detailed
+from src.params.constants import (
+    DEFAULT_WS_INTERVAL,
+    MONGO_COLLECTION,
+    POSTGRES_TABLE,
+    PREDICTIONS_COLLECTION,
+    SUPPORTED_SYMBOLS,
+)
+from src.storage import mongo, postgres
+from src.storage.mongo import get_collection
+from src.storage.mongo_writer import save_prediction
+from src.storage.postgres import get_engine
 from src.utils.url_utils import build_stream_url
-from src.collection.stream_live import parse_tick
 
 app = FastAPI(title="CryptoBot API")
 
@@ -107,9 +107,9 @@ def predict(symbol: str = DEFAULT_SYMBOL):
         result = predict_next_close_detailed(symbol=symbol)
     except ModelUnavailable as e:
         print(f"/predict: {e}", flush=True)       # details (bucket, path) to the log only
-        raise HTTPException(status_code=503, detail="No trained model is available yet.")
+        raise HTTPException(status_code=503, detail="No trained model is available yet.") from e
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     save_prediction(result)
     return {
         "symbol": symbol,

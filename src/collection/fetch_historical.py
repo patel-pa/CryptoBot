@@ -1,21 +1,18 @@
-import sys
 import os
+import sys
 from time import sleep, time_ns
 
 sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..')))
 
 import requests
-import pandas as pd
 
 from src.config import historical_start_date
+from src.params.constants import BINANCE_KLINES_URL, DEFAULT_REST_INTERVAL
+from src.storage.postgres import wait_for_postgres
+from src.storage.postgres_writer import get_last_close_ms, save_to_postgres
+from src.utils.dataframe_utils import raw_to_dataframe
 from src.utils.retry import retry
 from src.utils.time_utils import to_ms
-from src.params.constants import BINANCE_KLINES_URL, DEFAULT_REST_INTERVAL
-from src.utils.dataframe_utils import raw_to_dataframe
-
-from src.storage.postgres import wait_for_postgres
-from src.storage.postgres_writer import save_to_postgres, get_last_close_ms
-
 
 
 def get_binance_data(

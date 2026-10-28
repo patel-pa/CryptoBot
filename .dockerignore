@@ -13,6 +13,7 @@ __pycache__
 *.pyc
 .pytest_cache
 .mypy_cache
+.ruff_cache
 
 # The trained model is never baked into the image: it comes from S3 (AWS)
 # or the shared models volume (docker compose).

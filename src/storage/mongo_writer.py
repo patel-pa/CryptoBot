@@ -1,5 +1,5 @@
-from src.storage.mongo import get_collection
 from src.params.constants import MONGO_COLLECTION, PREDICTIONS_COLLECTION
+from src.storage.mongo import get_collection
 
 
 def save_closed_candle(doc, collection_name=MONGO_COLLECTION):
