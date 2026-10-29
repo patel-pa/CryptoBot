@@ -109,7 +109,7 @@ services:
   historical:
     <<: *app
     container_name: cryptobot-historical
-    command: python -m src.collection.fetch_historical
+    command: python -m src.cli ingest   # same command as the Kubernetes ingest CronJob
     restart: "no"
     depends_on:
       init:

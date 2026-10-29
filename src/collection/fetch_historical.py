@@ -1,18 +1,21 @@
-import os
-import sys
 from time import sleep, time_ns
-
-sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..')))
 
 import requests
 
 from src.config import historical_start_date
-from src.params.constants import BINANCE_KLINES_URL, DEFAULT_REST_INTERVAL
+from src.params.constants import BINANCE_KLINES_URL, DEFAULT_REST_INTERVAL, SUPPORTED_SYMBOLS
 from src.storage.postgres import wait_for_postgres
 from src.storage.postgres_writer import get_last_close_ms, save_to_postgres
 from src.utils.dataframe_utils import raw_to_dataframe
 from src.utils.retry import retry
 from src.utils.time_utils import to_ms
+
+SYMBOL = SUPPORTED_SYMBOLS[0].value
+PAGE_SIZE = 1000                            # Binance's maximum candles per request
+
+# Columns to persist, in the DB's order.
+DB_COLUMNS = ["symbol", "open_time", "open", "high", "low", "close",
+              "volume", "close_time", "number_of_trades"]
 
 
 def get_binance_data(
@@ -45,61 +48,65 @@ def get_binance_data(
                  exceptions=(requests.RequestException,), what="Binance request")
 
 
-SYMBOL = "BTCUSDT"
+def backfill(symbol=SYMBOL, now_ms=None):
+    """Store every candle missing from Postgres, up to now; return how many were fetched.
 
-# Columns to persist, in the DB's order.
-DB_COLUMNS = ["symbol", "open_time", "open", "high", "low", "close",
-              "volume", "close_time", "number_of_trades"]
+    Resumes 1 ms after the newest stored candle; an empty database starts at
+    HISTORICAL_START_DATE. Safe to run again at any time (the scheduled ingest
+    job runs it every 15 minutes). `now_ms` can be fixed in tests.
+    """
+    wait_for_postgres()                     # pods start in any order on Kubernetes
 
-wait_for_postgres()                         # pods start in any order on Kubernetes
+    last_close_ms = get_last_close_ms(symbol)
+    if last_close_ms is not None:
+        start_time = last_close_ms + 1          # resume 1ms after last stored candle
+    else:
+        start_time = to_ms(historical_start_date())  # empty DB → configured start
 
-last_close_ms = get_last_close_ms(SYMBOL)
-if last_close_ms is not None:
-    start_time = last_close_ms + 1              # resume 1ms after last stored candle
-else:
-    start_time = to_ms(historical_start_date())  # empty DB → configured start
+    end_time = now_ms if now_ms is not None else time_ns() // 1_000_000
 
-end_time  = time_ns() // 1_000_000          # now, in ms
+    # Persist each 1000-candle page AS SOON AS it arrives, instead of accumulating
+    # the whole history in memory and writing it once at the very end. Why this is
+    # better (and NOT harder on Postgres):
+    #   • the dashboard sees data within seconds, not after the full ~280k-row backfill
+    #   • memory stays bounded — one page at a time, never the whole history in RAM
+    #   • each write is a small, fast-committing 1000-row upsert (ON CONFLICT DO
+    #     NOTHING) — far gentler than one multi-million-parameter INSERT
+    #   • the write rate is capped by the fetch loop's sleep(0.15) + API latency
+    #     (~2 pages/sec), so Postgres is idle most of the time — no chance of overload
+    #   • if the run is interrupted, the rows already saved let the NEXT run resume
+    #     from get_last_close_ms instead of starting over
+    total_saved = 0
+    while start_time < end_time:
+        batch = get_binance_data(
+            symbol=symbol,
+            interval=DEFAULT_REST_INTERVAL,
+            start_time=start_time,
+            end_time=end_time,
+            limit=PAGE_SIZE,
+        )
+        if not batch:
+            break
 
-# Persist each 1000-candle page AS SOON AS it arrives, instead of accumulating
-# the whole history in memory and writing it once at the very end. Why this is
-# better (and NOT harder on Postgres):
-#   • the dashboard sees data within seconds, not after the full ~280k-row backfill
-#   • memory stays bounded — one page at a time, never the whole history in RAM
-#   • each write is a small, fast-committing 1000-row upsert (ON CONFLICT DO
-#     NOTHING) — far gentler than one multi-million-parameter INSERT
-#   • the write rate is capped by the fetch loop's sleep(0.15) + API latency
-#     (~2 pages/sec), so Postgres is idle most of the time — no chance of overload
-#   • if the run is interrupted, the rows already saved let the NEXT run resume
-#     from get_last_close_ms instead of starting over
-total_saved = 0
-while start_time < end_time:
-    batch = get_binance_data(
-        symbol=SYMBOL,
-        interval=DEFAULT_REST_INTERVAL,
-        start_time=start_time,
-        end_time=end_time,
-        limit=1000,
-    )
-    if not batch:
-        break
+        df = raw_to_dataframe(batch)
+        df["symbol"] = symbol
+        save_to_postgres(df[DB_COLUMNS])        # small batched upsert for THIS page
 
-    df = raw_to_dataframe(batch)
-    df["symbol"] = SYMBOL
-    save_to_postgres(df[DB_COLUMNS])        # small batched upsert for THIS page
+        total_saved += len(batch)
+        print(f"Saved {total_saved:,} candles for {symbol} "
+              f"(through {df['open_time'].iloc[-1]})", flush=True)
 
-    total_saved += len(batch)
-    print(f"Saved {total_saved:,} candles for {SYMBOL} "
-          f"(through {df['open_time'].iloc[-1]})", flush=True)
+        start_time = batch[-1][6] + 1           # 1ms after last candle's close_time
+        if len(batch) < PAGE_SIZE:              # last (partial) page → done
+            break
+        sleep(0.15)                             # respect Binance rate limits
 
-    start_time = batch[-1][6] + 1           # 1ms after last candle's close_time
-    if len(batch) < 1000:                   # last (partial) page → done
-        break
-    sleep(0.15)                             # respect Binance rate limits
+    if total_saved == 0:
+        print("No new candles to fetch — database is already up to date.", flush=True)
+    else:
+        print(f"Backfill complete: {total_saved:,} candles for {symbol}.", flush=True)
+    return total_saved
 
 
-if total_saved == 0:
-    print("No new candles to fetch — database is already up to date.")
-else:
-    print(f"Backfill complete: {total_saved:,} candles for {SYMBOL}.")
-
+if __name__ == "__main__":
+    backfill()

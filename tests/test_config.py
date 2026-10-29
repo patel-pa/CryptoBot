@@ -227,17 +227,21 @@ def test_invalid_model_check_interval_is_rejected(no_model_env, monkeypatch, raw
 
 
 def test_importing_the_app_needs_no_db_env_vars():
-    """Every module imports cleanly without any DB settings (they're read lazily).
+    """Every module imports cleanly without any DB settings (they're read lazily),
+    and importing touches no database (the backfill once ran at import time).
 
     Runs in a fresh interpreter so modules already imported by other tests
-    don't hide an import-time read. (A local .env would mask a regression here;
-    CI has none, so CI is the real guard.)
+    don't hide an import-time read. The required DB variables are set but
+    EMPTY: empty counts as missing, and load_dotenv() never overrides a set
+    variable, so a local .env cannot fill them in and hide a regression.
     """
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("POSTGRES_", "MONGO_"))}
+    env.update(dict.fromkeys(list(PG_ENV) + list(MONGO_ENV), ""))
     result = subprocess.run(
         [sys.executable, "-c",
-         "import src.api.main, src.storage.init_db, src.models.train_model"],
+         "import src.api.main, src.storage.init_db, src.models.train_model, "
+         "src.collection.fetch_historical, src.cli"],
         cwd=REPO_ROOT, env=env, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr

@@ -62,6 +62,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 
 ```
 src/
+├── cli.py          # scheduled jobs: python -m src.cli ingest | retrain
 ├── collection/     # fetch_historical.py (REST→PG), stream_live.py (WS→Mongo)
 ├── storage/        # postgres.py, mongo.py, schema.sql, init_db.py, *_writer.py
 ├── features/       # build_features.py
@@ -113,7 +114,8 @@ Because `historical` runs idempotently in the background, the dashboard is usabl
 
 ```bash
 docker compose run --rm api python -m src.storage.init_db          # schema + indexes
-docker compose run --rm api python -m src.collection.fetch_historical   # backfill
+docker compose run --rm api python -m src.cli ingest               # backfill / catch up
+docker compose run --rm api python -m src.cli retrain              # catch up, then train the model
 ```
 
 ---
