@@ -80,6 +80,28 @@ def test_saves_each_page_and_continues_after_its_last_candle(backend):
     assert backend.pauses == 1                         # one pause between the two requests
 
 
+@pytest.mark.parametrize("now", [
+    10 * MINUTE + 30_000,                              # 30 s into the candle opened at minute 10
+    11 * MINUTE - 1,                                   # its last millisecond: trades can still land
+], ids=["mid-minute", "last-millisecond"])
+def test_the_candle_still_open_is_not_stored(backend, now):
+    """Binance also returns the minute that is still open. Stored, its partial prices
+    would stay forever: the next run starts after it, and inserts skip existing rows."""
+    backend.last_close_ms = 8 * MINUTE - 1
+    backend.pages = [page(8 * MINUTE, 3)]              # minutes 8 and 9 (closed), 10 (open)
+    assert fh.backfill(now_ms=now) == 2
+    assert len(backend.saved[0]) == 2
+    assert len(backend.requests) == 1
+
+
+def test_full_page_ending_with_the_open_candle_stops(backend):
+    now = fh.PAGE_SIZE * MINUTE + 30_000               # the page's last candle is still open
+    backend.last_close_ms = MINUTE - 1
+    backend.pages = [page(MINUTE, fh.PAGE_SIZE)]
+    assert fh.backfill(now_ms=now) == fh.PAGE_SIZE - 1
+    assert len(backend.requests) == 1                  # no extra request for the open minute
+
+
 def test_up_to_date_database_fetches_nothing(backend, capsys):
     backend.last_close_ms = NOW
     assert fh.backfill(now_ms=NOW) == 0

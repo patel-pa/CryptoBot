@@ -49,7 +49,7 @@ def get_binance_data(
 
 
 def backfill(symbol=SYMBOL, now_ms=None):
-    """Store every candle missing from Postgres, up to now; return how many were fetched.
+    """Store every closed candle missing from Postgres; return how many were stored.
 
     Resumes 1 ms after the newest stored candle; an empty database starts at
     HISTORICAL_START_DATE. Safe to run again at any time (the scheduled ingest
@@ -78,13 +78,18 @@ def backfill(symbol=SYMBOL, now_ms=None):
     #     from get_last_close_ms instead of starting over
     total_saved = 0
     while start_time < end_time:
-        batch = get_binance_data(
+        page = get_binance_data(
             symbol=symbol,
             interval=DEFAULT_REST_INTERVAL,
             start_time=start_time,
             end_time=end_time,
             limit=PAGE_SIZE,
         )
+        # Binance also returns the minute that is still open (it closes after
+        # end_time), with partial prices. Store only closed candles: stored now, the
+        # open one would never be corrected (the next run starts after it, and the
+        # insert skips rows that exist). The next run fetches it once it has closed.
+        batch = [k for k in page if k[6] < end_time]     # k[6] = close_time (ms)
         if not batch:
             break
 
@@ -97,7 +102,7 @@ def backfill(symbol=SYMBOL, now_ms=None):
               f"(through {df['open_time'].iloc[-1]})", flush=True)
 
         start_time = batch[-1][6] + 1           # 1ms after last candle's close_time
-        if len(batch) < PAGE_SIZE:              # last (partial) page → done
+        if len(batch) < PAGE_SIZE:              # partial page or open candle reached → done
             break
         sleep(0.15)                             # respect Binance rate limits
 
