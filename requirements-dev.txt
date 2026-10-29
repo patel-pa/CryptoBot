@@ -1,4 +1,5 @@
-# Development and CI tools only: NOT installed in the Docker image.
+# Development and CI tools only: NOT in the production (runtime) image. The
+# Dockerfile's `test` stage installs them for checks; without Docker:
 #   pip install -r requirements-docker.txt -r requirements-dev.txt
 # Settings for the tools are in pyproject.toml.
 

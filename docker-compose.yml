@@ -12,7 +12,9 @@
 
 # Shared config for every Python app container (merged in below with "<<: *app").
 x-app: &app
-  build: .
+  build:
+    context: .
+    target: runtime             # the production stage: no test tools in the image
   image: cryptobot-app          # built once, reused by all app services
   env_file: .env                # POSTGRES_USER/PASSWORD/DB, MONGO_USER/PASSWORD/DB
   environment:

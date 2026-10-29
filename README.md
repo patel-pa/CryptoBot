@@ -137,8 +137,13 @@ Interactive docs: http://localhost:8000/docs
 
 ## Testing
 
+Lint and tests run in the Dockerfile's `test` stage (the production packages plus ruff and pytest), so the result is the same on every machine:
+
 ```bash
-pytest -v
+docker build --target test -t cryptobot-test .
+docker run --rm cryptobot-test        # ruff check . + pytest
 ```
 
-CI runs the same suite plus flake8 linting and a Docker image build on every push (see `.github/workflows/python-app.yml`).
+Without Docker (Python 3.11): `pip install -r requirements-docker.txt -r requirements-dev.txt`, then `ruff check .` and `pytest`.
+
+CI runs the same pytest suite plus flake8 linting (ruff replaces it in CI later) and a Docker image build on every push (see `.github/workflows/python-app.yml`).
