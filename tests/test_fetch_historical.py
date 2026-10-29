@@ -7,6 +7,7 @@ backfill is checked in test_config.py.)
 import pytest
 
 import src.collection.fetch_historical as fh
+from src.config import ConfigError
 from src.utils.time_utils import to_ms
 
 MINUTE = 60_000                             # ms
@@ -32,6 +33,10 @@ class FakeBackend:
         self.requests = []          # keyword arguments of each Binance request
         self.saved = []             # DataFrames given to save_to_postgres()
         self.pauses = 0
+        self.db_waits = 0
+
+    def wait_for_postgres(self):
+        self.db_waits += 1
 
     def get_last_close_ms(self, symbol):
         return self.last_close_ms
@@ -47,11 +52,13 @@ class FakeBackend:
 @pytest.fixture
 def backend(monkeypatch):
     b = FakeBackend()
-    monkeypatch.setattr(fh, "wait_for_postgres", lambda: None)
+    monkeypatch.setattr(fh, "wait_for_postgres", b.wait_for_postgres)
     monkeypatch.setattr(fh, "get_last_close_ms", b.get_last_close_ms)
     monkeypatch.setattr(fh, "get_binance_data", b.get_binance_data)
     monkeypatch.setattr(fh, "save_to_postgres", b.saved.append)
     monkeypatch.setattr(fh, "sleep", b.sleep)
+    for key in ("HISTORICAL_LOOKBACK_DAYS", "HISTORICAL_START_DATE"):
+        monkeypatch.delenv(key, raising=False)         # a local .env must not leak in
     return b
 
 
@@ -66,6 +73,34 @@ def test_empty_database_starts_at_the_configured_date(backend, monkeypatch):
     monkeypatch.setenv("HISTORICAL_START_DATE", "15.10.2026T00:00")   # not the default (01.10)
     fh.backfill(now_ms=to_ms("16.10.2026T00:00"))
     assert backend.requests[0]["start_time"] == to_ms("15.10.2026T00:00")
+
+
+def test_empty_database_with_a_lookback_starts_that_many_days_ago(backend, monkeypatch):
+    monkeypatch.setenv("HISTORICAL_LOOKBACK_DAYS", "2")
+    fh.backfill(now_ms=NOW)
+    # Written out, not via fh.DAY_MS: a wrong constant or an ignored N must fail.
+    assert backend.requests[0]["start_time"] == NOW - 2 * 24 * 60 * MINUTE
+
+
+def test_a_lookback_does_not_change_where_a_filled_database_resumes(backend, monkeypatch):
+    monkeypatch.setenv("HISTORICAL_LOOKBACK_DAYS", "1")
+    backend.last_close_ms = 5 * MINUTE - 1
+    fh.backfill(now_ms=NOW)
+    assert backend.requests[0]["start_time"] == 5 * MINUTE
+
+
+@pytest.mark.parametrize("settings, message", [
+    ({"HISTORICAL_LOOKBACK_DAYS": "1", "HISTORICAL_START_DATE": "01.10.2026T00:00"}, "not both"),
+    ({"HISTORICAL_START_DATE": "2026-10-01T00:00"}, "DD.MM.YYYY"),    # ISO instead of DD.MM.YYYY
+], ids=["both-set", "badly-written-date"])
+def test_bad_settings_fail_before_waiting_for_the_database(backend, monkeypatch, settings, message):
+    backend.last_close_ms = 5 * MINUTE - 1             # a FILLED database: still fails
+    for key, value in settings.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(ConfigError, match=message):
+        fh.backfill(now_ms=NOW)
+    assert backend.db_waits == 0                       # failed at once
+    assert backend.requests == []
 
 
 def test_saves_each_page_and_continues_after_its_last_candle(backend):

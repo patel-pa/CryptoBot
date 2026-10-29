@@ -32,8 +32,12 @@ BINANCE_KLINES_COLUMNS = [
 ]
 
 
-# Default start of the backfill when Postgres is empty ('DD.MM.YYYYThh:mm').
-# Override per environment with the HISTORICAL_START_DATE env var (src/config.py).
+# How dates are written in settings: DD.MM.YYYYThh:mm, e.g. 01.10.2026T00:00 (UTC).
+DATE_INPUT_FORMAT = "%d.%m.%YT%H:%M"
+
+# Default start of the backfill when Postgres is empty (DATE_INPUT_FORMAT).
+# Override per environment with HISTORICAL_START_DATE (a fixed date) or
+# HISTORICAL_LOOKBACK_DAYS (days back from now); see src/config.py.
 HISTORICAL_START_DATE = "01.10.2026T00:00"
 
 # Storage names — single source of truth, shared by writers, init, and ML

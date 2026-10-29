@@ -11,13 +11,14 @@ Kubernetes pass real environment variables instead.
 import math
 import os
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote, quote_plus, urlencode
 
 from dotenv import load_dotenv
 from sqlalchemy.engine import URL
 
-from src.params.constants import HISTORICAL_START_DATE, MODEL_FILENAME
+from src.params.constants import DATE_INPUT_FORMAT, HISTORICAL_START_DATE, MODEL_FILENAME
 
 load_dotenv()   # no-op when there is no .env; never overrides real env vars
 
@@ -208,6 +209,38 @@ def api_base_url():
 def historical_start_date():
     """Where an EMPTY database starts its backfill ('DD.MM.YYYYThh:mm').
 
-    Env var HISTORICAL_START_DATE overrides the default in constants.py.
+    Env var HISTORICAL_START_DATE overrides the default in constants.py. The
+    format is checked here, so a typo fails at once on every run, not only on
+    the day the database happens to be empty.
     """
-    return os.getenv("HISTORICAL_START_DATE") or HISTORICAL_START_DATE
+    value = os.getenv("HISTORICAL_START_DATE") or HISTORICAL_START_DATE
+    try:
+        datetime.strptime(value, DATE_INPUT_FORMAT)
+    except ValueError:
+        raise ConfigError(
+            f"HISTORICAL_START_DATE must be DD.MM.YYYYThh:mm (e.g. 01.10.2026T00:00), "
+            f"got {value!r}") from None
+    return value
+
+
+def historical_lookback_days():
+    """How many days back from now an EMPTY database starts its backfill, or None.
+
+    HISTORICAL_LOOKBACK_DAYS (whole days >= 1) suits dev, which starts empty every
+    session: a short reload instead of the full history. Unset = use
+    historical_start_date(). Setting both variables is a ConfigError, so it is
+    never unclear which one applies.
+    """
+    raw = os.getenv("HISTORICAL_LOOKBACK_DAYS")
+    if not raw:
+        return None
+    if os.getenv("HISTORICAL_START_DATE"):
+        raise ConfigError("Set HISTORICAL_LOOKBACK_DAYS or HISTORICAL_START_DATE, not both.")
+    try:
+        days = int(raw)
+    except ValueError:
+        days = 0                         # reported by the check below
+    if days < 1:
+        raise ConfigError(
+            f"HISTORICAL_LOOKBACK_DAYS must be a whole number of days >= 1, got {raw!r}")
+    return days

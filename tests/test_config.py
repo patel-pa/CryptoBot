@@ -184,6 +184,52 @@ def test_historical_start_date_default_and_override(monkeypatch):
     assert config.historical_start_date() == "15.10.2026T00:00"
 
 
+@pytest.fixture
+def no_history_env(monkeypatch):
+    for key in ("HISTORICAL_LOOKBACK_DAYS", "HISTORICAL_START_DATE"):
+        monkeypatch.delenv(key, raising=False)
+
+
+def test_lookback_days_are_unset_by_default(no_history_env):
+    assert config.historical_lookback_days() is None
+
+
+def test_empty_history_values_count_as_unset(no_history_env, monkeypatch):
+    monkeypatch.setenv("HISTORICAL_LOOKBACK_DAYS", "")
+    assert config.historical_lookback_days() is None
+    monkeypatch.setenv("HISTORICAL_LOOKBACK_DAYS", "1")
+    monkeypatch.setenv("HISTORICAL_START_DATE", "")         # empty: no "both set" conflict
+    assert config.historical_lookback_days() == 1
+    assert config.historical_start_date() == HISTORICAL_START_DATE
+
+
+@pytest.mark.parametrize("raw", ["2026-10-01T00:00", "01.10.2026", "31.02.2026T00:00", "soon"])
+def test_badly_written_start_date_is_rejected(no_history_env, monkeypatch, raw):
+    monkeypatch.setenv("HISTORICAL_START_DATE", raw)
+    with pytest.raises(config.ConfigError, match="HISTORICAL_START_DATE"):
+        config.historical_start_date()
+
+
+@pytest.mark.parametrize("raw, days", [("1", 1), ("7", 7)])
+def test_lookback_days_from_env(no_history_env, monkeypatch, raw, days):
+    monkeypatch.setenv("HISTORICAL_LOOKBACK_DAYS", raw)
+    assert config.historical_lookback_days() == days
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "1.5", "one"])
+def test_invalid_lookback_days_are_rejected(no_history_env, monkeypatch, raw):
+    monkeypatch.setenv("HISTORICAL_LOOKBACK_DAYS", raw)
+    with pytest.raises(config.ConfigError, match="HISTORICAL_LOOKBACK_DAYS"):
+        config.historical_lookback_days()
+
+
+def test_lookback_days_and_start_date_together_are_rejected(no_history_env, monkeypatch):
+    monkeypatch.setenv("HISTORICAL_LOOKBACK_DAYS", "1")
+    monkeypatch.setenv("HISTORICAL_START_DATE", "01.10.2026T00:00")
+    with pytest.raises(config.ConfigError, match="not both"):
+        config.historical_lookback_days()
+
+
 def test_api_base_url_default_and_override(monkeypatch):
     monkeypatch.delenv("API_BASE", raising=False)
     assert config.api_base_url() == "http://localhost:8000"

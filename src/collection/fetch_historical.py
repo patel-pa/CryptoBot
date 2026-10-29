@@ -2,7 +2,7 @@ from time import sleep, time_ns
 
 import requests
 
-from src.config import historical_start_date
+from src.config import historical_lookback_days, historical_start_date
 from src.params.constants import BINANCE_KLINES_URL, DEFAULT_REST_INTERVAL, SUPPORTED_SYMBOLS
 from src.storage.postgres import wait_for_postgres
 from src.storage.postgres_writer import get_last_close_ms, save_to_postgres
@@ -12,6 +12,7 @@ from src.utils.time_utils import to_ms
 
 SYMBOL = SUPPORTED_SYMBOLS[0].value
 PAGE_SIZE = 1000                            # Binance's maximum candles per request
+DAY_MS = 24 * 60 * 60 * 1000
 
 # Columns to persist, in the DB's order.
 DB_COLUMNS = ["symbol", "open_time", "open", "high", "low", "close",
@@ -51,19 +52,27 @@ def get_binance_data(
 def backfill(symbol=SYMBOL, now_ms=None):
     """Store every closed candle missing from Postgres; return how many were stored.
 
-    Resumes 1 ms after the newest stored candle; an empty database starts at
-    HISTORICAL_START_DATE. Safe to run again at any time (the scheduled ingest
-    job runs it every 15 minutes). `now_ms` can be fixed in tests.
+    Resumes 1 ms after the newest stored candle. An empty database starts
+    HISTORICAL_LOOKBACK_DAYS before now (dev) or at HISTORICAL_START_DATE (prod,
+    and the default). Safe to run again at any time (the scheduled ingest job
+    runs it every 15 minutes). `now_ms` can be fixed in tests.
     """
+    # Settings first: a bad value fails at once on every run, not only when the
+    # database happens to be empty, and before waiting for Postgres.
+    lookback_days = historical_lookback_days()
+    start_date = historical_start_date()
+
     wait_for_postgres()                     # pods start in any order on Kubernetes
+
+    end_time = now_ms if now_ms is not None else time_ns() // 1_000_000
 
     last_close_ms = get_last_close_ms(symbol)
     if last_close_ms is not None:
         start_time = last_close_ms + 1          # resume 1ms after last stored candle
+    elif lookback_days is not None:
+        start_time = end_time - lookback_days * DAY_MS   # empty DB → the last N days
     else:
-        start_time = to_ms(historical_start_date())  # empty DB → configured start
-
-    end_time = now_ms if now_ms is not None else time_ns() // 1_000_000
+        start_time = to_ms(start_date)          # empty DB → the configured date
 
     # Persist each 1000-candle page AS SOON AS it arrives, instead of accumulating
     # the whole history in memory and writing it once at the very end. Why this is
