@@ -95,13 +95,9 @@ target/
 .venv/
 venv/
 
-.env
-
 # Others
 PROJECT_CONTEXT.md
 cryptobot_timeline*
-.env
-
 
 # Trained models are build output, not source: S3 on AWS, a local file otherwise.
 models/*.pkl
