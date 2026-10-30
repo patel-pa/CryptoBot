@@ -1,0 +1,11 @@
+# The local model file (no S3 on kind). kind runs on one node, so the API and
+# the retrain job can both mount this ReadWriteOnce disk.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 100Mi

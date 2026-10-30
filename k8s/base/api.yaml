@@ -1,0 +1,94 @@
+# FastAPI: /charts /predict /predictions /stream /health /ready /metrics.
+# Internal only (ClusterIP): the dashboard and the streamer call it inside the
+# cluster, Prometheus scrapes /metrics; it is not exposed through the Ingress.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+spec:
+  replicas: 1                                # prod overlay: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
+    spec:
+      serviceAccountName: api                # reads the model from S3 (Pod Identity, Week 2)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001                     # the image's `app` user
+        runAsGroup: 10001
+        fsGroup: 10001                       # mounted volumes are writable for that group
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: api
+          image: cryptobot-app
+          command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: cryptobot-config
+            - secretRef:
+                name: postgres-credentials
+            - secretRef:
+                name: mongo-credentials
+          startupProbe:                      # imports take a few seconds: allow up to 60 s
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:                     # the process answers; if not, restart it
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 3
+          readinessProbe:                    # both databases answer (/ready waits at most 2 s)
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 320Mi                  # measured ~262 MB in docker compose
+            limits:
+              memory: 640Mi                  # no CPU limit: it would only throttle
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:                      # the only writable paths (see the Dockerfile)
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/app
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+spec:
+  selector:
+    app.kubernetes.io/name: api
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

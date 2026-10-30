@@ -1,0 +1,59 @@
+# Creates the Postgres table and the MongoDB indexes (idempotent: safe to run
+# again). Kubernetes removes the finished Job after 10 minutes. A Job cannot be
+# changed once created, so a deployment deletes a leftover one first:
+#   kubectl delete job init-db --ignore-not-found
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: init-db
+  labels:
+    app.kubernetes.io/name: init-db
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 3                            # each try already waits ~3 min for the databases
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: init-db
+    spec:
+      restartPolicy: Never                   # a failed try stays visible: kubectl logs
+      serviceAccountName: cryptobot
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: init-db
+          image: cryptobot-app
+          command: ["python", "-m", "src.storage.init_db"]
+          envFrom:
+            - configMapRef:
+                name: cryptobot-config
+            - secretRef:
+                name: postgres-credentials
+            - secretRef:
+                name: mongo-credentials
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/app
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}

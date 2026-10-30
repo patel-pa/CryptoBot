@@ -71,6 +71,7 @@ src/
 ├── visualization/  # app.py (Streamlit dashboard: historical + live + predictions)
 ├── params/         # constants, enums
 └── utils/          # time / url / dataframe helpers
+k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (kind); dev, prod follow
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
 .github/workflows/  # CI pipeline (python-app.yml)
@@ -115,6 +116,34 @@ docker compose run --rm api python -m src.storage.init_db          # schema + in
 docker compose run --rm api python -m src.cli ingest               # backfill / catch up
 docker compose run --rm api python -m src.cli retrain              # catch up, then train the model
 ```
+
+---
+
+## Run on Kubernetes locally (kind)
+
+The same image and manifests as on AWS, in a local test cluster: `k8s/overlays/local` adds in-cluster Postgres and MongoDB and keeps the model on a local disk instead of S3. Needs Docker, [kind](https://kind.sigs.k8s.io/) and kubectl.
+
+```bash
+kind create cluster --name cryptobot
+docker build --target runtime -t cryptobot-app:local .
+kind load docker-image cryptobot-app:local --name cryptobot
+
+cp k8s/overlays/local/postgres.env.example k8s/overlays/local/postgres.env   # then set passwords
+cp k8s/overlays/local/mongo.env.example    k8s/overlays/local/mongo.env
+kubectl apply -k k8s/overlays/local
+
+kubectl -n cryptobot get pods                                   # wait until Running / Completed
+kubectl -n cryptobot create job --from=cronjob/ingest  ingest-now     # don't wait for the schedule
+kubectl -n cryptobot create job --from=cronjob/retrain retrain-now
+kubectl -n cryptobot port-forward svc/dashboard 8501:8501       # http://localhost:8501
+
+kind delete cluster --name cryptobot                            # removes the cluster and its data
+```
+
+The `ingest` (every 15 min) and `retrain` (daily) CronJobs also run on their own. After a code change: build and `kind load` again, then `kubectl -n cryptobot rollout restart deployment`.
+
+- **Set the passwords before the first apply.** Postgres and MongoDB take them only when their data disk is empty; to change them later, `kind delete cluster --name cryptobot` and start again.
+- **Applying again within 10 minutes** (while the finished `init-db` Job still exists) fails with `field is immutable` if anything it uses changed. Delete it first: `kubectl -n cryptobot delete job init-db --ignore-not-found`.
 
 ---
 

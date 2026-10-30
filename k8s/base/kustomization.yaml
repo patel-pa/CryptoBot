@@ -1,0 +1,30 @@
+# Shared by every environment: WHAT runs. The overlays (local, dev, prod) add
+# WHERE and HOW: namespace, image, database hosts, secrets, replicas.
+# Render with: kubectl kustomize k8s/overlays/<env>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: cryptobot
+
+resources:
+  - serviceaccounts.yaml
+  - api.yaml
+  - streamer.yaml
+  - dashboard.yaml
+  - init-db-job.yaml
+  - cronjobs.yaml
+
+# Plain settings for every pod; each overlay merges in its own values. The
+# generated name gets a content hash, so changed settings roll the pods.
+configMapGenerator:
+  - name: cryptobot-config
+    literals:
+      - API_BASE=http://api:8000          # the API Service in the same namespace
+      - POSTGRES_PORT=5432
+      - MONGO_PORT=27017
+
+# Passwords are NOT here: two Secrets, `postgres-credentials` and
+# `mongo-credentials`, come from the overlay (a local file on kind, AWS Secrets
+# Manager via External Secrets on EKS). Each pod gets only the ones it needs.

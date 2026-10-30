@@ -1,0 +1,60 @@
+# Binance WebSocket -> closed candles into MongoDB -> POST /predict on the API.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: streamer
+  labels:
+    app.kubernetes.io/name: streamer
+spec:
+  replicas: 1                                # exactly one: a second would save each candle and
+                                             # ask for each forecast again (wasted work)
+  strategy:
+    type: Recreate                           # stop the old pod before the new one starts
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: streamer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: streamer
+    spec:
+      serviceAccountName: cryptobot
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: streamer
+          image: cryptobot-app
+          command: ["python", "-m", "src.collection.stream_live"]
+          # No probes: the streamer serves no HTTP, and it reconnects to Binance by
+          # itself. A stopped streamer shows as "no POST /predict for 5 min" in /metrics.
+          envFrom:
+            - configMapRef:
+                name: cryptobot-config
+            - secretRef:
+                name: mongo-credentials        # MongoDB only, no Postgres access
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              memory: 384Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home
+              mountPath: /home/app
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: home
+          emptyDir: {}

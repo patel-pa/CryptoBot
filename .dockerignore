@@ -1,19 +1,16 @@
 # Keep the build context (and image) small and free of secrets.
-.git
-.gitignore
-.github
+# Every hidden file and folder: .git, .github, local settings and caches, and
+# .env (passwords, passed in at runtime via env_file / Secrets, never baked in).
+.*
 
-# Secrets — passed in at runtime via docker-compose env_file, never baked in.
-.env
+# Kubernetes manifests are applied with kubectl and never needed in the image;
+# k8s/overlays/local/*.env holds the local (kind) passwords.
+k8s
 
 # Local Python environments / caches
-.venv
 venv
 __pycache__
 *.pyc
-.pytest_cache
-.mypy_cache
-.ruff_cache
 
 # The trained model is never baked into the image: it comes from S3 (AWS)
 # or the shared models volume (docker compose).

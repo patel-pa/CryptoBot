@@ -1,0 +1,42 @@
+# kind only (a local test cluster): the base plus in-cluster Postgres and
+# MongoDB, passwords from local files, and the model on a local disk instead
+# of S3. Steps: see "Run on Kubernetes locally (kind)" in the README.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cryptobot
+
+resources:
+  - ../../base
+  - namespace.yaml
+  - postgres.yaml
+  - mongodb.yaml
+  - models-pvc.yaml
+
+images:
+  - name: cryptobot-app
+    newTag: local                         # built here and loaded with `kind load docker-image`
+
+configMapGenerator:
+  - name: cryptobot-config
+    behavior: merge
+    literals:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=cryptobot
+      - MONGO_HOST=mongodb
+      - MONGO_DB=cryptobot
+      - HISTORICAL_LOOKBACK_DAYS=1        # an empty database loads only the last day
+
+# Real values in postgres.env / mongo.env (gitignored); see the *.env.example files.
+secretGenerator:
+  - name: postgres-credentials
+    envs:
+      - postgres.env
+  - name: mongo-credentials
+    envs:
+      - mongo.env
+
+# Without S3, `retrain` and the API share the model file on a local disk.
+patches:
+  - path: patch-api-models.yaml
+  - path: patch-retrain-models.yaml

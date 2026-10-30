@@ -99,6 +99,9 @@ venv/
 PROJECT_CONTEXT.md
 cryptobot_timeline*
 
+# Local Kubernetes (kind) passwords: real values, never committed (see *.env.example)
+k8s/overlays/local/*.env
+
 # Trained models are build output, not source: S3 on AWS, a local file otherwise.
 models/*.pkl
 
