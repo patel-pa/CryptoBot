@@ -42,18 +42,3 @@ def wait_for_postgres(attempts=20, base_delay=1.0, max_delay=10.0):
     retry(ping, attempts=attempts, base_delay=base_delay, max_delay=max_delay,
           exceptions=(OperationalError,), what="Postgres connection")
     print("✓ Postgres reachable", flush=True)
-
-
-def test_connection():
-    """Test the database connection."""
-    try:
-        ping()
-        print("✓ Database connection successful!")
-        return True
-    except Exception as e:
-        print(f"✗ Database connection failed: {e}")
-        return False
-
-
-if __name__ == "__main__":
-    test_connection()

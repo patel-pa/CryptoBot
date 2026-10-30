@@ -50,12 +50,3 @@ def predict_next_close_detailed(symbol=SYMBOL, n=1):
         "target_kline_start_time": target_start,
         "predicted_close": predicted_close,
     }
-
-
-def predict_next_close(symbol=SYMBOL, n=1):
-    """Backwards-compatible helper: return just the predicted close value."""
-    return predict_next_close_detailed(symbol=symbol, n=n)["predicted_close"]
-
-
-if __name__ == "__main__":
-    print("Predicted next close:", predict_next_close())

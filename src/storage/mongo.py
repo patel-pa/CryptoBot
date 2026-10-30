@@ -40,18 +40,3 @@ def wait_for_mongo(attempts=20, base_delay=1.0, max_delay=10.0):
     retry(ping, attempts=attempts, base_delay=base_delay, max_delay=max_delay,
           exceptions=(ConnectionFailure,), what="MongoDB connection")
     print("✓ MongoDB reachable", flush=True)
-
-
-def test_connection():
-    """Test the MongoDB connection."""
-    try:
-        ping()
-        print("✓ MongoDB connection successful!")
-        return True
-    except Exception as e:
-        print(f"✗ MongoDB connection failed: {e}")
-        return False
-
-
-if __name__ == "__main__":
-    test_connection()
