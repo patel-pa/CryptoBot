@@ -67,7 +67,7 @@ src/
 ├── storage/        # postgres.py, mongo.py, schema.sql, init_db.py, *_writer.py
 ├── features/       # build_features.py
 ├── models/         # train_model.py, predict_model.py
-├── api/            # main.py (FastAPI: /charts, /stream, /predict, /predictions, /health)
+├── api/            # main.py (FastAPI: /charts, /stream, /predict, /predictions, /health, /ready, /metrics), metrics.py
 ├── visualization/  # app.py (Streamlit dashboard: historical + live + predictions)
 ├── params/         # constants, enums
 └── utils/          # time / url / dataframe helpers
@@ -128,6 +128,7 @@ docker compose run --rm api python -m src.cli retrain              # catch up, t
 | `/predict` | POST | MongoDB + model | Forecasts the next candle's close and stores it; the streamer calls it after each closed candle |
 | `/predictions` | GET | MongoDB | Stored forecasts joined with actual closes (predicted-vs-actual) |
 | `/stream` | WebSocket | Binance (live) | Real-time tick feed relayed to the browser |
+| `/metrics` | GET | — | Prometheus metrics: requests and durations per route and status, plus Python/process stats (for monitoring, not listed in `/docs`) |
 
 Interactive docs: http://localhost:8000/docs
 

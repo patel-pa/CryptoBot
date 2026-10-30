@@ -5,9 +5,10 @@ import pandas as pd
 import websockets
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 
+from src.api import metrics
 from src.collection.stream_live import parse_tick
 from src.models.model_store import ModelUnavailable
 from src.models.predict_model import predict_next_close_detailed
@@ -25,6 +26,7 @@ from src.storage.postgres import get_engine
 from src.utils.url_utils import build_stream_url
 
 app = FastAPI(title="CryptoBot API")
+app.middleware("http")(metrics.track_requests)     # count and time every request
 
 DEFAULT_SYMBOL = SUPPORTED_SYMBOLS[0].value
 
@@ -41,6 +43,17 @@ def health():
     Kubernetes restart healthy API pods (that is what /ready is for).
     """
     return {"status": "ok"}
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics():
+    """Prometheus metrics, in Prometheus' text format.
+
+    Scraped by Prometheus inside the cluster; not meant for the public Ingress.
+    Hidden from /docs because it is for monitoring, not for API users.
+    """
+    body, content_type = metrics.render()
+    return Response(body, media_type=content_type)
 
 
 async def _check(name, ping):
