@@ -7,10 +7,12 @@
 #   test     base + development tools (ruff, pytest), for checks only, never deployed:
 #              docker build --target test -t cryptobot-test .
 #              docker run --rm cryptobot-test
-#   runtime  base + the code: the production image (the last stage, so a plain
-#            `docker build .` produces it)
+#   runtime  base + the code, run as a non-root user: the production image (the
+#            last stage, so a plain `docker build .` produces it)
 
-FROM python:3.11-slim AS base
+# Pinned by digest, so every build starts from exactly the same image: a tag such
+# as 3.11-slim moves whenever it is rebuilt. The tag says what the digest is.
+FROM python:3.11.18-slim-trixie@sha256:ffe4b0c76963e64f05484d74dbb3f67fad1effcf3c5c22c2235f0fafc8a9c98f AS base
 
 # PYTHONUNBUFFERED → print() / logs appear immediately in `docker compose logs`.
 # PYTHONDONTWRITEBYTECODE → don't litter the image with .pyc files.
@@ -40,9 +42,24 @@ CMD ["sh", "-c", "ruff check . --no-cache && pytest -q -p no:cacheprovider"]
 
 FROM base AS runtime
 
+# A non-root user with a fixed NUMERIC id: Kubernetes' runAsNonRoot can only
+# check a numeric user. Writable for the app: /home/app (libraries that keep
+# settings or caches there), /tmp, and /app/models (below); nothing else.
+RUN groupadd --gid 10001 app \
+ && useradd --uid 10001 --gid app --create-home --home-dir /home/app \
+    --shell /usr/sbin/nologin app
+
 # Copy the rest of the project (source code). The trained model is NOT baked in
 # (.dockerignore): it comes from S3 on AWS, or the shared models volume locally.
+# The code stays owned by root, so the app can read it but never change it.
 COPY . .
+
+# The only folder under /app the app writes: the local model file (docker
+# compose). A new volume mounted here starts as a copy of this folder, owner
+# included.
+RUN mkdir -p /app/models && chown app:app /app/models
+
+USER 10001:10001
 
 # Default command — overridden per service in docker-compose.yml.
 CMD ["python", "-m", "src.collection.stream_live"]
