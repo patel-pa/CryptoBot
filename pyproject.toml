@@ -4,10 +4,7 @@
 [tool.ruff]
 line-length = 127                    # same limit as the flake8 step in CI
 target-version = "py311"             # the Python version of the Docker image
-extend-exclude = [
-    "notebooks",                     # exploration notebooks, not production code
-    "airflow",                       # removed in Task 8 (Kubernetes CronJobs replace Airflow)
-]
+extend-exclude = ["notebooks"]       # exploration notebooks, not production code
 
 [tool.ruff.lint]
 # E, W: pycodestyle   F: pyflakes   I: import order

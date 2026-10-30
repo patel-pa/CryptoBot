@@ -1,6 +1,6 @@
 # CryptoBot — Real-Time & Batch Data Pipeline for Crypto Market Data
 
-An end-to-end data engineering platform that ingests Binance BTC/USDT market data through **two independent pipelines** — a batch pipeline for historical candles and a real-time streaming pipeline for live ticks — stores each in a fit-for-purpose database, trains an ML model to forecast the next candle, and serves everything through a REST API and a live Streamlit dashboard. The full stack is containerized, orchestrated with Airflow, and covered by CI.
+An end-to-end data engineering platform that ingests Binance BTC/USDT market data through **two independent pipelines** — a batch pipeline for historical candles and a real-time streaming pipeline for live ticks — stores each in a fit-for-purpose database, trains an ML model to forecast the next candle, and serves everything through a REST API and a live Streamlit dashboard. The full stack is containerized and covered by CI.
 
 > Built solo as the capstone Data Engineering project for the DataScientest / Liora Data Engineer programme — designed, implemented, and delivered end-to-end.
 
@@ -40,7 +40,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 **Serving:** FastAPI + Uvicorn
 **Dashboard:** Streamlit + Plotly
 **ML:** scikit-learn, pandas, joblib
-**Orchestration:** Apache Airflow (DockerOperator)
+**Scheduling:** two commands, `python -m src.cli ingest` and `retrain`, run as Kubernetes CronJobs in v2 (in progress); v1.0 used Apache Airflow
 **Infra & CI/CD:** Docker, docker-compose, GitHub Actions (flake8 + pytest + image build)
 **Testing:** pytest
 
@@ -51,8 +51,8 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 - **Idempotent ingestion** — the batch pipeline uses `ON CONFLICT (symbol, open_time) DO NOTHING`; the stream pipeline uses a unique index on `(symbol, kline_start_time)` + upsert. Re-runs and overlapping ranges never create duplicates.
 - **Incremental / resumable loading** — before fetching, the collector reads `MAX(close_time)` from PostgreSQL and resumes 1 ms after the last stored candle, so the same script serves both the initial backfill and scheduled top-ups.
 - **Pagination** — handles Binance's 1,000-candle-per-request limit by advancing `startTime` until a partial page signals the present has been reached.
-- **Scheduled orchestration** — two Airflow DAGs keep the system current: `cryptobot_ingest` re-runs the idempotent collector every 15 minutes, and `cryptobot_train` catches the data up and retrains the model daily, publishing `model.pkl` to a shared volume the API reads live (no restart needed).
-- **Verified data quality** — **~240,000+** one-minute BTC/USDT candles loaded with **0 gaps** (and growing — the ingest DAG tops up every 15 min), confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
+- **Scheduled jobs** — two commands keep the system current: `python -m src.cli ingest` re-runs the idempotent collector, and `python -m src.cli retrain` catches the data up and retrains the model. On Kubernetes they will run as CronJobs, every 15 minutes and daily (v2, in progress); in docker compose, `historical` runs `ingest` on every `up` and `retrain` is run by hand. The API picks up a newer model by itself (S3 on AWS, a local file in docker compose), no restart needed. Each command's exit code tells the scheduler whether it failed.
+- **Verified data quality** — **~240,000+** one-minute BTC/USDT candles loaded with **0 gaps** (and growing with every ingest run), confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
 - **Predicted-vs-actual tracking** — every `/predict` call is persisted, so `/predictions` can join each forecast against the candle's real close for later evaluation.
 - **CI on every push** — GitHub Actions runs flake8 (fails on syntax/undefined-name errors), the pytest suite, and a Docker image build.
 
@@ -71,11 +71,10 @@ src/
 ├── visualization/  # app.py (Streamlit dashboard: historical + live + predictions)
 ├── params/         # constants, enums
 └── utils/          # time / url / dataframe helpers
-airflow/            # Dockerfile + dags/ (cryptobot_ingest.py, cryptobot_train.py)
 tests/              # pytest suite
-notebooks/          # exploration + verification
+notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
 .github/workflows/  # CI pipeline (python-app.yml)
-docker-compose.yml  # full stack: postgres, mongo, init, historical, streamer, api, dashboard, airflow
+docker-compose.yml  # full stack: postgres, mongo, init, historical, streamer, api, dashboard
 ```
 
 ---
@@ -108,9 +107,8 @@ That single command brings up everything and wires the pipelines together automa
 | `streamer` | Always-on: live Binance WebSocket → MongoDB | — |
 | `api` | Always-on: FastAPI | http://localhost:8000/docs |
 | `dashboard` | Always-on: Streamlit live chart + predictions | http://localhost:8501 |
-| `airflow` | Orchestration UI (ingest + train DAGs) | http://localhost:8080 |
 
-Because `historical` runs idempotently in the background, the dashboard is usable while the database catches up. To run a step manually instead of via the stack:
+Because `historical` runs idempotently in the background, the dashboard is usable while the database catches up. There is no scheduler in docker compose: train the model once (and whenever you want a fresh one) with `retrain` below. To run a step manually:
 
 ```bash
 docker compose run --rm api python -m src.storage.init_db          # schema + indexes

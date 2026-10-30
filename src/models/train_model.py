@@ -38,7 +38,3 @@ def train():
     # 5. Save the trained model: S3 on AWS, the local models/ folder otherwise
     location = save_model(model)
     print(f"Saved model to {location} (trained on {len(X)} rows)")
-
-
-if __name__ == "__main__":
-    train()

@@ -54,8 +54,8 @@ def backfill(symbol=SYMBOL, now_ms=None):
 
     Resumes 1 ms after the newest stored candle. An empty database starts
     HISTORICAL_LOOKBACK_DAYS before now (dev) or at HISTORICAL_START_DATE (prod,
-    and the default). Safe to run again at any time (the scheduled ingest job
-    runs it every 15 minutes). `now_ms` can be fixed in tests.
+    and the default). Safe to run again at any time (the Kubernetes ingest
+    CronJob will run it every 15 minutes). `now_ms` can be fixed in tests.
     """
     # Settings first: a bad value fails at once on every run, not only when the
     # database happens to be empty, and before waiting for Postgres.
@@ -120,7 +120,3 @@ def backfill(symbol=SYMBOL, now_ms=None):
     else:
         print(f"Backfill complete: {total_saved:,} candles for {symbol}.", flush=True)
     return total_saved
-
-
-if __name__ == "__main__":
-    backfill()
