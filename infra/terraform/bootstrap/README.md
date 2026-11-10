@@ -9,6 +9,7 @@ work session.
 | S3 bucket | `cryptobot-tfstate-patel-pa` | Terraform state of every layer, one key per layer (`bootstrap/`, `platform/`, …). Locking with an S3 lock file (`use_lockfile`), no DynamoDB table. |
 | S3 bucket | `cryptobot-models-patel-pa` | The trained model, one key per environment (`dev/model.pkl`, `prod/model.pkl`). The retrain job uploads, the API downloads; versioning keeps earlier models. |
 | ECR repository | `cryptobot` | The one application image. Tags are git commit SHAs and **immutable**; scanned on push. Kept for rollbacks: the newest 10 images promoted to prod (second tag `prod-<main SHA>`), however many dev pushes follow, and the newest 30 tagged images overall (prod images count toward the 30 but are never expired by that rule). |
+| CloudWatch log groups | `/aws/containerinsights/cryptobot/application`, `/dataplane`, `/host` | Container logs of the EKS cluster (sent by the CloudWatch observability add-on). Created here so they outlive every cluster teardown; kept 7 days, so they never grow forever. |
 | IAM OIDC provider | `token.actions.githubusercontent.com` | GitHub Actions gets short-lived AWS credentials; no AWS key is stored in GitHub. |
 | IAM roles | `cryptobot-github-build`, `-deploy-dev`, `-deploy-prod` | One role per CI job, each with only what that job needs (below). |
 
@@ -97,8 +98,10 @@ design. The ECR repository cannot be deleted while it still holds images.
 
 Security scanners (Trivy, Checkov) report these; they are accepted on purpose:
 
-- **KMS customer-managed keys (S3, ECR):** AWS-managed AES-256 encryption already protects
-  the data at rest; a KMS key costs about $1 per month plus requests.
+- **KMS customer-managed keys (S3, ECR, CloudWatch Logs):** AWS-managed encryption already
+  protects the data at rest; a KMS key costs about $1 per month plus requests.
+- **Log retention of a year or more:** 7 days is enough to debug a session; longer retention
+  only adds storage cost.
 - **S3 access logging, event notifications:** need another bucket or a consumer; CloudTrail
   already records who changed a bucket.
 - **Cross-region replication:** doubles storage and adds a second region; versioning already

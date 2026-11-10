@@ -86,6 +86,37 @@ run "ecr_keeps_images_safe" {
   }
 }
 
+run "container_logs_are_kept_7_days" {
+  command = plan
+
+  assert {
+    condition = toset([for g in aws_cloudwatch_log_group.containers : g.name]) == toset([
+      "/aws/containerinsights/cryptobot/application",
+      "/aws/containerinsights/cryptobot/dataplane",
+      "/aws/containerinsights/cryptobot/host",
+    ])
+    error_message = "The log groups must be the ones the CloudWatch add-on's Fluent Bit writes to."
+  }
+
+  assert {
+    condition     = alltrue([for g in aws_cloudwatch_log_group.containers : g.retention_in_days == 7])
+    error_message = "Container logs must expire after 7 days, so they never grow forever."
+  }
+}
+
+run "container_log_groups_follow_the_cluster_name" {
+  command = plan
+
+  variables {
+    eks_cluster_name = "other"
+  }
+
+  assert {
+    condition     = alltrue([for g in aws_cloudwatch_log_group.containers : startswith(g.name, "/aws/containerinsights/other/")])
+    error_message = "The log group names must use var.eks_cluster_name, the name the platform layer gives the cluster."
+  }
+}
+
 run "each_ci_role_trusts_exactly_one_github_context" {
   command = plan
 

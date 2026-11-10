@@ -13,6 +13,11 @@ output "ecr_repository_url" {
   value       = aws_ecr_repository.app.repository_url
 }
 
+output "container_log_groups" {
+  description = "CloudWatch log groups the cluster's container logs go to (7-day retention)."
+  value       = [for g in aws_cloudwatch_log_group.containers : g.name]
+}
+
 output "ci_role_arns" {
   description = "IAM role per CI job (build, deploy-dev, deploy-prod) for the CD workflow to assume."
   value       = { for name, role in aws_iam_role.ci : name => role.arn }

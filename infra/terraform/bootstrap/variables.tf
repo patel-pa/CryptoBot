@@ -16,7 +16,7 @@ variable "github_repository" {
 }
 
 variable "eks_cluster_name" {
-  description = "EKS cluster created by the platform layer; the deploy roles may describe it."
+  description = "EKS cluster of the platform layer: the deploy roles may describe it, and its container log groups are created here."
   type        = string
   default     = "cryptobot"
 }
