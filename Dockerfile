@@ -7,8 +7,9 @@
 #   test     base + development tools (ruff, pytest), for checks only, never deployed:
 #              docker build --target test -t cryptobot-test .
 #              docker run --rm cryptobot-test
-#   runtime  base + the code, run as a non-root user: the production image (the
-#            last stage, so a plain `docker build .` produces it)
+#   runtime  base + the AWS database CA bundle + the code, run as a non-root user:
+#            the production image (the last stage, so a plain `docker build .`
+#            produces it)
 
 # Pinned by digest, so every build starts from exactly the same image: a tag such
 # as 3.11-slim moves whenever it is rebuilt. The tag says what the digest is.
@@ -48,6 +49,18 @@ FROM base AS runtime
 RUN groupadd --gid 10001 app \
  && useradd --uid 10001 --gid app --create-home --home-dir /home/app \
     --shell /usr/sbin/nologin app
+
+# AWS's CA bundle for Amazon RDS and DocumentDB (every region), so the app can
+# check the databases' TLS certificates: on AWS, MONGO_TLS_CA_FILE and
+# POSTGRES_SSLROOTCERT point to this file. The checksum pins the exact file: a
+# build that downloads it (no cached layer, as in CI) fails if the file was
+# changed or AWS published a new bundle; cached builds do not download it again.
+# To update: download the file, check it, and put its new sha256 here.
+# The folder is created first: ADD would create it with the file's mode 644
+# (no "x"), and then the app user could not open it.
+RUN mkdir -m 755 /etc/ssl/aws
+ADD --checksum=sha256:90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b --chmod=644 \
+    https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /etc/ssl/aws/global-bundle.pem
 
 # Copy the rest of the project (source code). The trained model is NOT baked in
 # (.dockerignore): it comes from S3 on AWS, or the shared models volume locally.
