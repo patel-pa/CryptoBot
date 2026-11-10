@@ -3,6 +3,24 @@
 
 mock_provider "aws" {}
 
+# The provider still checks that policy JSON is valid (deploy_prod includes deploy_dev's,
+# and the role policies use all three), so each permission document gets a small,
+# distinct JSON instead of the mock's random text.
+override_data {
+  target = data.aws_iam_policy_document.build
+  values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"build\",\"Statement\":[]}" }
+}
+
+override_data {
+  target = data.aws_iam_policy_document.deploy_dev
+  values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"deploy-dev\",\"Statement\":[]}" }
+}
+
+override_data {
+  target = data.aws_iam_policy_document.deploy_prod
+  values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"deploy-prod\",\"Statement\":[]}" }
+}
+
 run "every_bucket_gets_every_protection" {
   command = plan
 
@@ -65,5 +83,116 @@ run "ecr_keeps_images_safe" {
       "${r.rulePriority} ${try(r.selection.tagPatternList[0], "untagged")}"
     ] == ["1 prod-*", "2 untagged", "3 *"]
     error_message = "The prod-* rule must come first, so the rule for all other tags never expires a prod image."
+  }
+}
+
+run "each_ci_role_trusts_exactly_one_github_context" {
+  command = plan
+
+  assert {
+    condition = {
+      for name, role in local.ci_roles : name => role.subject
+      } == {
+      build       = "repo:patel-pa/CryptoBot:ref:refs/heads/dev"
+      deploy-dev  = "repo:patel-pa/CryptoBot:ref:refs/heads/dev"
+      deploy-prod = "repo:patel-pa/CryptoBot:environment:production"
+    }
+    error_message = "Unexpected token subjects for the CI roles."
+  }
+
+  assert {
+    condition = alltrue([for name, d in data.aws_iam_policy_document.github_trust :
+      length(d.statement) == 1 &&
+      toset([for c in d.statement[0].condition : "${c.test} ${c.variable} ${join(",", c.values)}"]) == toset([
+        "StringEquals token.actions.githubusercontent.com:aud sts.amazonaws.com",
+        "StringEquals token.actions.githubusercontent.com:sub ${local.ci_roles[name].subject}",
+      ])
+    ])
+    error_message = "Each trust policy must check aud and sub with exact matches (no wildcards)."
+  }
+
+  assert {
+    condition     = toset([for r in aws_iam_role.ci : r.name]) == toset(["cryptobot-github-build", "cryptobot-github-deploy-dev", "cryptobot-github-deploy-prod"])
+    error_message = "Unexpected CI role names."
+  }
+}
+
+run "ci_roles_have_least_privilege" {
+  command = plan
+
+  assert {
+    condition = toset(flatten([for s in data.aws_iam_policy_document.build.statement : s.actions])) == toset([
+      "ecr:GetAuthorizationToken", "ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage",
+      "ecr:CompleteLayerUpload", "ecr:DescribeImages", "ecr:GetDownloadUrlForLayer",
+      "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart",
+    ])
+    error_message = "build may only log in to ECR and push images."
+  }
+
+  assert {
+    condition     = toset(flatten([for s in data.aws_iam_policy_document.deploy_dev.statement : s.actions])) == toset(["ecr:DescribeImages", "eks:DescribeCluster"])
+    error_message = "deploy-dev may only look up images and describe the cluster."
+  }
+
+  assert {
+    condition     = toset(flatten([for s in data.aws_iam_policy_document.deploy_prod.statement : s.actions])) == toset(["ecr:BatchGetImage", "ecr:PutImage"])
+    error_message = "deploy-prod may only add a tag to an existing image (plus what deploy-dev may do)."
+  }
+}
+
+run "repository_must_be_owner_slash_name" {
+  command = plan
+
+  variables {
+    github_repository = "CryptoBot"
+  }
+
+  expect_failures = [var.github_repository]
+}
+
+# Which policy JSON each role gets is only known after apply. With the mock provider
+# an apply creates nothing real; the target keeps it to the roles and their policies
+# (no buckets, which could not be destroyed at the end of the test because of
+# prevent_destroy; the two "-target" warnings this prints are expected). Each document
+# has a distinct JSON, so a role wired to the wrong one fails.
+run "each_role_uses_its_own_policies" {
+  command = apply
+
+  plan_options {
+    target = [aws_iam_role.ci, aws_iam_role_policy.ci]
+  }
+
+  override_data {
+    target = data.aws_iam_policy_document.github_trust["build"]
+    values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"build\",\"Statement\":[]}" }
+  }
+
+  override_data {
+    target = data.aws_iam_policy_document.github_trust["deploy-dev"]
+    values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"deploy-dev\",\"Statement\":[]}" }
+  }
+
+  override_data {
+    target = data.aws_iam_policy_document.github_trust["deploy-prod"]
+    values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"deploy-prod\",\"Statement\":[]}" }
+  }
+
+  assert {
+    condition     = alltrue([for name, r in aws_iam_role.ci : r.assume_role_policy == data.aws_iam_policy_document.github_trust[name].json])
+    error_message = "Each CI role must use the trust policy for its own GitHub context."
+  }
+
+  assert {
+    condition = { for name, p in aws_iam_role_policy.ci : name => p.policy } == {
+      build       = data.aws_iam_policy_document.build.json
+      deploy-dev  = data.aws_iam_policy_document.deploy_dev.json
+      deploy-prod = data.aws_iam_policy_document.deploy_prod.json
+    }
+    error_message = "Each CI role must get its own permissions."
+  }
+
+  assert {
+    condition     = data.aws_iam_policy_document.deploy_prod.source_policy_documents == tolist([data.aws_iam_policy_document.deploy_dev.json])
+    error_message = "deploy-prod may only add deploy-dev's permissions to its own."
   }
 }

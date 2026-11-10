@@ -12,3 +12,8 @@ output "ecr_repository_url" {
   description = "Image name without tag; images are tagged with the git commit SHA."
   value       = aws_ecr_repository.app.repository_url
 }
+
+output "ci_role_arns" {
+  description = "IAM role per CI job (build, deploy-dev, deploy-prod) for the CD workflow to assume."
+  value       = { for name, role in aws_iam_role.ci : name => role.arn }
+}

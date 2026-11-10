@@ -9,6 +9,20 @@ work session.
 | S3 bucket | `cryptobot-tfstate-patel-pa` | Terraform state of every layer, one key per layer (`bootstrap/`, `platform/`, …). Locking with an S3 lock file (`use_lockfile`), no DynamoDB table. |
 | S3 bucket | `cryptobot-models-patel-pa` | The trained model, one key per environment (`dev/model.pkl`, `prod/model.pkl`). The retrain job uploads, the API downloads; versioning keeps earlier models. |
 | ECR repository | `cryptobot` | The one application image. Tags are git commit SHAs and **immutable**; scanned on push. Kept for rollbacks: the newest 10 images promoted to prod (second tag `prod-<main SHA>`), however many dev pushes follow, and the newest 30 tagged images overall (prod images count toward the 30 but are never expired by that rule). |
+| IAM OIDC provider | `token.actions.githubusercontent.com` | GitHub Actions gets short-lived AWS credentials; no AWS key is stored in GitHub. |
+| IAM roles | `cryptobot-github-build`, `-deploy-dev`, `-deploy-prod` | One role per CI job, each with only what that job needs (below). |
+
+| Role | Who may assume it (token `sub`) | May do |
+|---|---|---|
+| `build` | a job on the `dev` branch without a GitHub environment | log in to ECR, push the image |
+| `deploy-dev` | a job on the `dev` branch without a GitHub environment | look up an image's digest, describe the EKS cluster |
+| `deploy-prod` | a job in the GitHub environment `production` | as `deploy-dev`, plus add the tag `prod-<main SHA>` to an existing image |
+
+A job that sets `environment:` gets the subject `…:environment:<name>` instead of the
+branch, so the dev jobs must not use a GitHub environment (or the trust must change).
+
+Inside Kubernetes the deploy roles get rights through EKS access entries (platform layer):
+`deploy-dev` only in the `dev` namespace, `deploy-prod` only in `prod`.
 
 Not managed here: the AWS Budgets alerts (created by hand in the console before any
 Terraform code existed).
@@ -45,6 +59,17 @@ terraform state list                                      # now read from S3
 rm terraform.tfstate*                                     # local copy, no longer needed
 rm tfplan
 ```
+
+## GitHub settings this layer relies on
+
+The `deploy-prod` role trusts every job that runs in the GitHub environment `production`,
+so the environment itself must be protected (repository Settings → Environments →
+`production`):
+
+- **Required reviewers:** the repository owner (every prod deploy waits for approval).
+- **Deployment branches and tags:** selected branches only, `main`.
+
+`terraform output ci_role_arns` prints the role ARNs the CD workflow assumes.
 
 ## Every later change
 
