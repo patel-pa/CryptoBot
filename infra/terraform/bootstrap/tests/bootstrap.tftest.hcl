@@ -15,9 +15,9 @@ run "every_bucket_gets_every_protection" {
         keys(aws_s3_bucket_ownership_controls.this),
         keys(aws_s3_bucket_policy.this),
         keys(aws_s3_bucket_lifecycle_configuration.this),
-      ] : toset(names) == toset(["tfstate"])
+      ] : toset(names) == toset(["tfstate", "models"])
     ])
-    error_message = "Each protection must exist once for the tfstate bucket."
+    error_message = "Each protection must exist once for the tfstate and the models bucket."
   }
 
   assert {
@@ -48,5 +48,22 @@ run "every_bucket_gets_every_protection" {
   assert {
     condition     = aws_s3_bucket.this["tfstate"].bucket == "cryptobot-tfstate-patel-pa"
     error_message = "The state bucket name must match the backend block in backend.tf."
+  }
+}
+
+run "ecr_keeps_images_safe" {
+  command = plan
+
+  assert {
+    condition     = aws_ecr_repository.app.image_tag_mutability == "IMMUTABLE"
+    error_message = "Image tags must be immutable (the same SHA must always mean the same image)."
+  }
+
+  assert {
+    condition = [
+      for r in jsondecode(aws_ecr_lifecycle_policy.app.policy).rules :
+      "${r.rulePriority} ${try(r.selection.tagPatternList[0], "untagged")}"
+    ] == ["1 prod-*", "2 untagged", "3 *"]
+    error_message = "The prod-* rule must come first, so the rule for all other tags never expires a prod image."
   }
 }

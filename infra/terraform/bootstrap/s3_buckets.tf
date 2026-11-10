@@ -3,6 +3,7 @@
 locals {
   buckets = {
     tfstate = "cryptobot-tfstate-patel-pa" # Terraform state of every layer; = backend.tf
+    models  = "cryptobot-models-patel-pa"  # trained model, one prefix per env (dev/, prod/)
   }
 }
 
