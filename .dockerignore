@@ -7,6 +7,9 @@
 # k8s/overlays/local/*.env holds the local (kind) passwords.
 k8s
 
+# Terraform code (and its local state and provider downloads) is never needed in the image.
+infra
+
 # Local Python environments / caches
 venv
 __pycache__

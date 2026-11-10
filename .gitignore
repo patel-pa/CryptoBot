@@ -105,6 +105,16 @@ k8s/overlays/local/*.env
 # Trained models are build output, not source: S3 on AWS, a local file otherwise.
 models/*.pkl
 
+# Terraform: downloaded providers, local state and saved plans never go into Git
+# (state lives in S3). The provider lock file .terraform.lock.hcl IS committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+*.tfplan
+*_override.tf
+crash.log
+
 # Keep the ENTIRE references/ directory LOCAL only — phase reports, defense
 # deck, course notes stay on disk but are never pushed to the CV repo.
 /references/
