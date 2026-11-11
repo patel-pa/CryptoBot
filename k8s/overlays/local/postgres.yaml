@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:15
+          image: postgres:18
           ports:
             - name: postgres
               containerPort: 5432
@@ -40,8 +40,6 @@ spec:
                 configMapKeyRef:
                   name: cryptobot-config
                   key: POSTGRES_DB
-            - name: PGDATA                       # a subfolder: the volume's root may not be empty
-              value: /var/lib/postgresql/data/pgdata
           readinessProbe:
             exec:
               command: ["sh", "-c", "pg_isready -h localhost -U \"$POSTGRES_USER\" -d \"$POSTGRES_DB\""]
@@ -53,8 +51,8 @@ spec:
             limits:
               memory: 512Mi
           volumeMounts:
-            - name: data
-              mountPath: /var/lib/postgresql/data
+            - name: data                         # the image keeps its data in the subfolder 18/docker
+              mountPath: /var/lib/postgresql
   volumeClaimTemplates:
     - metadata:
         name: data

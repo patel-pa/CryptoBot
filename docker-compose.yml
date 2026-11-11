@@ -43,8 +43,11 @@ x-app: &app
 
 services:
   # ----------------------------- Databases -----------------------------
+  # Same major versions as the AWS databases (RDS PostgreSQL 18, DocumentDB 8.0).
+  # After a major version change, recreate the volumes (docker compose down -v):
+  # data files of an older major version may not start on the new one.
   postgres:
-    image: postgres:15
+    image: postgres:18
     container_name: cryptobot-postgres
     restart: always
     environment:
@@ -54,7 +57,9 @@ services:
     ports:
       - "${POSTGRES_PORT}:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # Since 18 the image keeps its data in /var/lib/postgresql/18/docker and
+      # refuses a volume on the old path /var/lib/postgresql/data.
+      - postgres_data:/var/lib/postgresql
     networks:
       - pipeline_network
     healthcheck:
@@ -73,7 +78,7 @@ services:
       start_period: 30s
 
   mongodb:
-    image: mongo:6
+    image: mongo:8.0
     container_name: cryptobot-mongodb
     restart: always
     environment:
