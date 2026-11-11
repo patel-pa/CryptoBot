@@ -8,6 +8,48 @@ mock_provider "aws" {
       json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
     }
   }
+
+  # A made-up account and the identity that applies the layer (it becomes cluster admin).
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "123456789012"
+      arn        = "arn:aws:sts::123456789012:assumed-role/AccountFullAccessRole/tester"
+    }
+  }
+
+  mock_data "aws_iam_session_context" {
+    defaults = {
+      issuer_arn = "arn:aws:iam::123456789012:role/AccountFullAccessRole"
+    }
+  }
+
+  mock_data "aws_partition" {
+    defaults = {
+      partition  = "aws"
+      dns_suffix = "amazonaws.com"
+    }
+  }
+}
+
+mock_provider "kubernetes" {}
+
+# What the bootstrap layer's state would provide.
+override_data {
+  target = data.terraform_remote_state.bootstrap
+  values = {
+    outputs = {
+      ci_role_arns = {
+        build         = "arn:aws:iam::123456789012:role/cryptobot-github-build"
+        "deploy-dev"  = "arn:aws:iam::123456789012:role/cryptobot-github-deploy-dev"
+        "deploy-prod" = "arn:aws:iam::123456789012:role/cryptobot-github-deploy-prod"
+      }
+      container_log_groups = [
+        "/aws/containerinsights/cryptobot/application",
+        "/aws/containerinsights/cryptobot/dataplane",
+        "/aws/containerinsights/cryptobot/host",
+      ]
+    }
+  }
 }
 
 run "network_has_two_zones_one_nat_and_a_free_s3_path" {
@@ -44,6 +86,71 @@ run "network_has_two_zones_one_nat_and_a_free_s3_path" {
       private = { "kubernetes.io/role/internal-elb" = 1 }
     }
     error_message = "The subnets must carry the tags the Load Balancer Controller looks for."
+  }
+}
+
+run "cluster_is_pinned_and_each_deploy_role_edits_only_its_namespace" {
+  command = plan
+
+  assert {
+    condition = local.cluster == {
+      kubernetes_version      = "1.37"
+      support_type            = "STANDARD"
+      endpoint_public_access  = true
+      endpoint_private_access = true
+      authentication_mode     = "API"
+      enabled_log_types       = []
+      instance_types          = ["t3.medium"]
+      node_count              = 2
+    }
+    error_message = "Cost and security settings changed: version, support type (extended costs 6x), endpoints, authentication, control-plane logs or node size/count."
+  }
+
+  assert {
+    condition     = module.eks.cluster_version == "1.37"
+    error_message = "The cluster must run Kubernetes 1.37."
+  }
+
+  assert {
+    condition = { for name, addon in module.eks.cluster_addons : name => addon.addon_version } == {
+      "vpc-cni"                = "v1.22.4-eksbuild.14"
+      "eks-pod-identity-agent" = "v1.4.1-eksbuild.3"
+      "kube-proxy"             = "v1.37.0-eksbuild.39"
+      coredns                  = "v1.14.7-eksbuild.35"
+    }
+    error_message = "The core add-ons must be exactly the pinned versions."
+  }
+
+  assert {
+    condition     = module.eks.access_entries["cluster_creator"].principal_arn == "arn:aws:iam::123456789012:role/AccountFullAccessRole"
+    error_message = "The identity that applies this layer must become cluster admin."
+  }
+
+  assert {
+    condition = {
+      for name, entry in module.eks.access_entries : name => "${entry.principal_arn} ${join(",", sort(entry.kubernetes_groups))}"
+      if name != "cluster_creator"
+      } == {
+      "deploy-dev"  = "arn:aws:iam::123456789012:role/cryptobot-github-deploy-dev cryptobot-deploy-dev"
+      "deploy-prod" = "arn:aws:iam::123456789012:role/cryptobot-github-deploy-prod cryptobot-deploy-prod"
+    }
+    error_message = "Each deploy role (from the bootstrap layer) must map to its own Kubernetes group."
+  }
+
+  assert {
+    condition = {
+      for env, binding in kubernetes_role_binding_v1.deploy :
+      env => "${binding.metadata[0].namespace} ${binding.role_ref[0].kind}/${binding.role_ref[0].name} ${binding.subject[0].name}"
+      } == {
+      dev  = "dev ClusterRole/edit cryptobot-deploy-dev"
+      prod = "prod ClusterRole/edit cryptobot-deploy-prod"
+    }
+    error_message = "Each deploy group may only edit its own namespace."
+  }
+
+  assert {
+    condition     = module.eks.kms_key_arn == null && module.eks.cloudwatch_log_group_name == null && module.eks.oidc_provider_arn == null
+    error_message = "No own KMS key, no control-plane log group, no IRSA OIDC provider."
   }
 }
 
