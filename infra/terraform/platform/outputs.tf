@@ -18,6 +18,11 @@ output "node_security_group_id" {
   value       = module.eks.node_security_group_id
 }
 
+output "external_secrets_controller_role_arn" {
+  description = "Pod Identity role of the External Secrets controller; the envs layers' roles trust it (with the esoNamespace session tag)."
+  value       = module.external_secrets_pod_identity.iam_role_arn
+}
+
 output "kubeconfig_command" {
   description = "Command that points kubectl at this cluster."
   value       = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}"

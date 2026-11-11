@@ -3,7 +3,7 @@
 Created at the start of a work session and **destroyed at the end**: it costs money every
 hour it exists. The state lives in the bootstrap layer's bucket under `platform/`, so
 destroying this layer never touches the bootstrap layer. It reads the bootstrap layer's
-outputs (the CI role ARNs) from that layer's state, read-only.
+outputs (the CI role ARNs and the log group names) from that layer's state, read-only.
 
 | Resource | Details | Why |
 |---|---|---|
@@ -17,6 +17,9 @@ outputs (the CI role ARNs) from that layer's state, read-only.
 | EKS add-ons | VPC CNI, Pod Identity agent, kube-proxy, CoreDNS (pinned versions) | Pod networking, pod AWS rights, service routing, DNS |
 | Namespaces | `dev`, `prod` | Two environments in one cluster |
 | Access | the applying identity = cluster admin; `deploy-dev` / `deploy-prod` = `edit` in their own namespace only | CD can change its environment and nothing else |
+| AWS Load Balancer Controller | Helm chart 3.6.2, `kube-system`, own Pod Identity role | Turns the dashboard's Ingress into one ALB |
+| External Secrets | Helm chart 2.14.0, `external-secrets`, own Pod Identity role | Copies each environment's database passwords from Secrets Manager into Kubernetes |
+| CloudWatch observability add-on | v7.0.1, container logs only (Fluent Bit; no CloudWatch agent pods), own Pod Identity role | Container logs into the bootstrap layer's log groups (7 days); its metrics features are off |
 
 Subnet tags tell the AWS Load Balancer Controller where to put load balancers:
 `kubernetes.io/role/elb` (public) and `kubernetes.io/role/internal-elb` (private).
@@ -34,7 +37,28 @@ Subnet tags tell the AWS Load Balancer Controller where to put load balancers:
 Access entries only (no `aws-auth` ConfigMap). The CI roles `cryptobot-github-deploy-dev` and
 `-deploy-prod` (bootstrap layer) are mapped to the Kubernetes groups `cryptobot-deploy-dev` /
 `-prod`; a RoleBinding gives each group the built-in ClusterRole `edit` in its own
-namespace.
+namespace, plus a Role that allows `ExternalSecret` objects there. `edit` deliberately
+gives **no write rights** on External Secrets' resources (see the next section).
+
+## How dev is kept from reading prod's passwords
+
+With Pod Identity, External Secrets has one identity for the whole cluster
+(`cryptobot-external-secrets`). That role may only assume, and tag, the per-environment roles
+`cryptobot-dev-external-secrets` and `cryptobot-prod-external-secrets` (envs layers). Which
+role a namespace uses, and with which session tags, is set in its **SecretStore**. Two locks:
+
+1. **Kubernetes:** deploy jobs may create `ExternalSecret` objects ("I need this secret") but
+   may not create or change `SecretStore` objects ("read it with this role and these tags"):
+   `edit` gives no write rights on External Secrets' resources (`rbac.aggregateToEdit =
+   false`; reading them stays possible and is harmless, a store holds no secret values). The
+   SecretStore of each namespace is created by the envs layer, which only the owner applies,
+   with that environment's role and `sessionTagsPolicy: Simple`.
+2. **AWS:** each environment role trusts the controller only when the session tag
+   `esoNamespace` names its own namespace. With `sessionTagsPolicy: Simple`, External Secrets
+   sets that tag to the store's namespace.
+
+Lock 1 is needed: with the default policy `None`, a SecretStore may list any session tags by
+hand (External Secrets 2.14.0), including `esoNamespace=prod`.
 
 ## One work session
 
@@ -48,6 +72,28 @@ terraform plan -destroy -out=destroy.tfplan    # have it reviewed before destroy
 terraform apply destroy.tfplan
 ```
 
+## Teardown: what Terraform did not create
+
+The AWS Load Balancer Controller creates an **ALB** (and its security groups) for every
+Ingress, outside Terraform. Remove it before destroying this layer, or it keeps running and
+blocks deleting the VPC:
+
+```bash
+kubectl delete ingress --all -A              # the controller deletes the ALBs
+aws elbv2 describe-load-balancers --query "LoadBalancers[].LoadBalancerName"   # until empty
+```
+
+Then plan and apply the destroy (above). The container log groups belong to the bootstrap
+layer and stay (7 days). No PersistentVolumeClaims, so no EBS volumes are left behind.
+
+## Pod budget
+
+A t3.medium node runs at most 17 pods (VPC CNI without prefix delegation): 34 in the cluster.
+This layer uses about 15: per node aws-node, kube-proxy, the Pod Identity agent and Fluent Bit
+(4 × 2), once CoreDNS ×2, the CloudWatch operator, the Load Balancer Controller and External
+Secrets ×3 (7). That leaves about 19 for the apps (dev 3, prod 4, a few Job pods) and the
+monitoring stack of Week 4. If that gets tight: VPC CNI prefix delegation raises the limit.
+
 ## Cost while it exists (Frankfurt list prices)
 
 | Item | Per hour |
@@ -57,6 +103,8 @@ terraform apply destroy.tfplan
 | NAT gateway + its public IPv4 address | $0.052 + $0.005 |
 | **Total** | **≈ $0.26** |
 | Data through the NAT gateway | $0.052 per GB (S3 traffic is free through the endpoint) |
+| Container logs | $0.63 per GB ingested |
+| ALB, once an Ingress exists | ≈ $0.027 + its public IPv4 addresses |
 
 ## Checks (offline, no AWS account needed)
 

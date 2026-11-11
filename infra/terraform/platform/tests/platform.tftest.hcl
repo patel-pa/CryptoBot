@@ -33,6 +33,8 @@ mock_provider "aws" {
 
 mock_provider "kubernetes" {}
 
+mock_provider "helm" {}
+
 # What the bootstrap layer's state would provide.
 override_data {
   target = data.terraform_remote_state.bootstrap
@@ -152,6 +154,115 @@ run "cluster_is_pinned_and_each_deploy_role_edits_only_its_namespace" {
     condition     = module.eks.kms_key_arn == null && module.eks.cloudwatch_log_group_name == null && module.eks.oidc_provider_arn == null
     error_message = "No own KMS key, no control-plane log group, no IRSA OIDC provider."
   }
+}
+
+run "controllers_are_pinned_and_deploy_jobs_cannot_change_secret_stores" {
+  command = plan
+
+  assert {
+    condition = {
+      for name, release in { lb = helm_release.aws_lb_controller, eso = helm_release.external_secrets } :
+      name => "${release.namespace} ${release.chart} ${release.version}"
+      } == {
+      lb  = "kube-system aws-load-balancer-controller 3.6.2"
+      eso = "external-secrets external-secrets 2.14.0"
+    }
+    error_message = "The controllers must be the pinned chart versions in their namespaces."
+  }
+
+  assert {
+    condition = (
+      local.lb_controller_values.enableServiceMutatorWebhook == false &&
+      local.lb_controller_values.replicaCount == 1 &&
+      local.lb_controller_values.region == "eu-central-1" &&
+      contains(keys(local.lb_controller_values), "vpcId") &&
+      local.lb_controller_values.serviceAccount.name == "aws-load-balancer-controller"
+    )
+    error_message = "Load Balancer Controller: Service webhook off, one replica, region and VPC set, its service account."
+  }
+
+  assert {
+    condition = alltrue([
+      for m in [module.aws_lb_controller_pod_identity, module.external_secrets_pod_identity] :
+      length(m.associations) == 1
+    ]) && module.aws_lb_controller_pod_identity.associations["controller"].service_account == "aws-load-balancer-controller" && module.aws_lb_controller_pod_identity.associations["controller"].namespace == "kube-system" && module.external_secrets_pod_identity.associations["controller"].service_account == "external-secrets" && module.external_secrets_pod_identity.associations["controller"].namespace == "external-secrets"
+    error_message = "Each controller role must belong to exactly its controller's service account."
+  }
+
+  assert {
+    condition = (
+      yamldecode(helm_release.external_secrets.values[0]).serviceAccount.name == "external-secrets" &&
+      yamldecode(helm_release.external_secrets.values[0]).rbac.aggregateToEdit == false
+    )
+    error_message = "External Secrets: its role's service account, and its resources kept out of the \"edit\" role."
+  }
+
+  assert {
+    condition = {
+      for env, role in kubernetes_role_v1.external_secrets_user :
+      env => "${role.metadata[0].namespace} ${join(",", role.rule[0].api_groups)} ${join(",", sort(role.rule[0].resources))} ${length(role.rule)}"
+      } == {
+      dev  = "dev external-secrets.io externalsecrets 1"
+      prod = "prod external-secrets.io externalsecrets 1"
+    }
+    error_message = "Deploy jobs may manage ExternalSecrets in their namespace, but never SecretStores."
+  }
+
+  assert {
+    condition = {
+      for env, binding in kubernetes_role_binding_v1.external_secrets_user :
+      env => "${binding.metadata[0].namespace} ${binding.role_ref[0].kind}/${binding.role_ref[0].name} ${binding.subject[0].name}"
+      } == {
+      dev  = "dev Role/cryptobot-external-secrets-user cryptobot-deploy-dev"
+      prod = "prod Role/cryptobot-external-secrets-user cryptobot-deploy-prod"
+    }
+    error_message = "Each deploy group gets the ExternalSecret rights of its own namespace only."
+  }
+
+  assert {
+    condition = (
+      length(data.aws_iam_policy_document.external_secrets.statement) == 1 &&
+      toset(data.aws_iam_policy_document.external_secrets.statement[0].actions) == toset(["sts:AssumeRole", "sts:TagSession"]) &&
+      toset(data.aws_iam_policy_document.external_secrets.statement[0].resources) == toset(["arn:aws:iam::123456789012:role/cryptobot-*-external-secrets"])
+    )
+    error_message = "The External Secrets controller may only assume (and tag) the per-environment roles."
+  }
+
+  assert {
+    condition = (
+      aws_eks_addon.cloudwatch_observability.addon_version == "v7.0.1-eksbuild.1" &&
+      jsondecode(aws_eks_addon.cloudwatch_observability.configuration_values).containerLogs.enabled == true &&
+      length(jsondecode(aws_eks_addon.cloudwatch_observability.configuration_values).agents) == 0 &&
+      alltrue([for feature in ["containerInsights", "applicationSignals", "otelContainerInsights", "kubeStateMetrics", "nodeExporter", "dcgmExporter", "neuronMonitor"] :
+      jsondecode(aws_eks_addon.cloudwatch_observability.configuration_values)[feature].enabled == false])
+    )
+    error_message = "The CloudWatch add-on (pinned version) must send container logs only: no agent pods, metrics features off."
+  }
+
+  assert {
+    condition     = one(aws_eks_addon.cloudwatch_observability.pod_identity_association).service_account == "cloudwatch-agent"
+    error_message = "The CloudWatch role must be associated with the service account Fluent Bit runs as."
+  }
+}
+
+run "log_add_on_refuses_a_cluster_without_kept_log_groups" {
+  command = plan
+
+  override_data {
+    target = data.terraform_remote_state.bootstrap
+    values = {
+      outputs = {
+        ci_role_arns = {
+          build         = "arn:aws:iam::123456789012:role/cryptobot-github-build"
+          "deploy-dev"  = "arn:aws:iam::123456789012:role/cryptobot-github-deploy-dev"
+          "deploy-prod" = "arn:aws:iam::123456789012:role/cryptobot-github-deploy-prod"
+        }
+        container_log_groups = ["/aws/containerinsights/other/application"]
+      }
+    }
+  }
+
+  expect_failures = [aws_eks_addon.cloudwatch_observability]
 }
 
 # Route table IDs exist only after apply. With the mock provider an apply creates nothing

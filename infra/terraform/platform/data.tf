@@ -13,3 +13,7 @@ data "terraform_remote_state" "bootstrap" {
 locals {
   ci_role_arns = data.terraform_remote_state.bootstrap.outputs.ci_role_arns
 }
+
+data "aws_caller_identity" "current" {}
+
+data "aws_partition" "current" {}
