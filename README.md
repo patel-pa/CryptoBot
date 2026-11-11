@@ -72,7 +72,7 @@ src/
 ├── params/         # constants, enums
 └── utils/          # time / url / dataframe helpers
 k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (kind); dev, prod follow
-infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept); platform/, envs/ follow
+infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/ (destroyed after every session); envs/ follow
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
 .github/workflows/  # CI pipeline (python-app.yml)
