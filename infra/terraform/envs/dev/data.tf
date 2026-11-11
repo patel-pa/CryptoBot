@@ -1,4 +1,4 @@
-# Outputs of the platform layer (VPC, private subnets, the nodes' security group), read
+# Outputs of the platform layer (network, cluster, External Secrets controller role), read
 # from its state. Read only: this layer can never change the platform layer.
 data "terraform_remote_state" "platform" {
   backend = "s3"
@@ -11,17 +11,36 @@ data "terraform_remote_state" "platform" {
 }
 
 locals {
-  # The outputs are missing while the platform layer is destroyed. Then the subnet groups'
-  # preconditions (network.tf) stop the plan with a clear message; the placeholders below
-  # only keep the configuration valid until then and can never reach AWS.
+  # The outputs are missing while the platform layer is destroyed. Then the preconditions
+  # (here and in network.tf) stop a normal plan with a clear message; the placeholders below
+  # only keep the configuration valid until then. (A destroy plan skips preconditions: see
+  # the README for destroying this layer after the cluster is already gone.)
+  platform_outputs = ["vpc_id", "private_subnet_ids", "node_security_group_id", "cluster_name", "external_secrets_controller_role_arn"]
   platform_applied = alltrue([
-    for output in ["vpc_id", "private_subnet_ids", "node_security_group_id"] :
-    can(data.terraform_remote_state.platform.outputs[output])
+    for output in local.platform_outputs : can(data.terraform_remote_state.platform.outputs[output])
   ])
 
   platform = {
-    vpc_id                 = try(data.terraform_remote_state.platform.outputs.vpc_id, "platform-not-applied")
-    private_subnet_ids     = try(data.terraform_remote_state.platform.outputs.private_subnet_ids, [])
-    node_security_group_id = try(data.terraform_remote_state.platform.outputs.node_security_group_id, "platform-not-applied")
+    vpc_id                               = try(data.terraform_remote_state.platform.outputs.vpc_id, "platform-not-applied")
+    private_subnet_ids                   = try(data.terraform_remote_state.platform.outputs.private_subnet_ids, [])
+    node_security_group_id               = try(data.terraform_remote_state.platform.outputs.node_security_group_id, "platform-not-applied")
+    cluster_name                         = try(data.terraform_remote_state.platform.outputs.cluster_name, "platform-not-applied")
+    external_secrets_controller_role_arn = try(data.terraform_remote_state.platform.outputs.external_secrets_controller_role_arn, "platform-not-applied")
   }
 }
+
+# Address and certificate of the cluster, for the kubernetes provider (providers.tf).
+data "aws_eks_cluster" "this" {
+  name = local.platform.cluster_name
+
+  lifecycle {
+    precondition {
+      condition     = local.platform_applied
+      error_message = "The platform layer's state has no outputs: apply the platform layer first (and destroy this layer before the platform)."
+    }
+  }
+}
+
+data "aws_caller_identity" "current" {}
+
+data "aws_partition" "current" {}

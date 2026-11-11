@@ -81,9 +81,9 @@ resource "helm_release" "aws_lb_controller" {
 # Two locks keep dev from reading prod's passwords:
 # 1. Kubernetes: deploy jobs cannot create or change SecretStores (kubernetes.tf); the
 #    envs layers create one per namespace, with that environment's role and
-#    sessionTagsPolicy Simple, so ESO sets esoNamespace to the store's namespace.
+#    sessionTagsPolicy Simple, so ESO sets esoNamespace and esoStoreKind from the store.
 # 2. AWS: each environment role trusts the controller only when esoNamespace names its
-#    own namespace. ---
+#    own namespace and esoStoreKind is SecretStore. ---
 
 data "aws_iam_policy_document" "external_secrets" {
   statement {

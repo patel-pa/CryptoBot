@@ -10,17 +10,49 @@ mock_provider "aws" {
       secret_string = "{\"username\":\"cryptobot\",\"password\":\"mockpassword\"}"
     }
   }
+
+  # A made-up account.
+  mock_data "aws_caller_identity" {
+    defaults = {
+      account_id = "123456789012"
+    }
+  }
+
+  mock_data "aws_partition" {
+    defaults = {
+      partition = "aws"
+    }
+  }
 }
+
+mock_provider "kubernetes" {}
 
 # What the platform layer's state would provide.
 override_data {
   target = data.terraform_remote_state.platform
   values = {
     outputs = {
-      vpc_id                 = "vpc-platform"
-      private_subnet_ids     = ["subnet-private-a", "subnet-private-b"]
-      node_security_group_id = "sg-nodes"
+      vpc_id                               = "vpc-platform"
+      private_subnet_ids                   = ["subnet-private-a", "subnet-private-b"]
+      node_security_group_id               = "sg-nodes"
+      cluster_name                         = "cryptobot"
+      external_secrets_controller_role_arn = "arn:aws:iam::123456789012:role/cryptobot-external-secrets"
     }
+  }
+}
+
+# Distinct (valid) JSON per policy document, so the tests can see which one a role uses.
+override_data {
+  target = data.aws_iam_policy_document.external_secrets_trust
+  values = {
+    json = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"Trust\",\"Effect\":\"Allow\",\"Action\":\"sts:AssumeRole\",\"Principal\":{\"AWS\":\"*\"}}]}"
+  }
+}
+
+override_data {
+  target = data.aws_iam_policy_document.external_secrets_read
+  values = {
+    json = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"Read\",\"Effect\":\"Allow\",\"Action\":\"secretsmanager:GetSecretValue\",\"Resource\":\"*\"}]}"
   }
 }
 
@@ -185,6 +217,49 @@ run "only_the_nodes_reach_the_databases" {
   }
 }
 
+run "dev_role_trusts_only_the_controller_for_dev_and_reads_only_dev" {
+  command = plan
+
+  assert {
+    condition = (
+      length(data.aws_iam_policy_document.external_secrets_trust.statement) == 1 &&
+      toset(data.aws_iam_policy_document.external_secrets_trust.statement[0].actions) == toset(["sts:AssumeRole", "sts:TagSession"]) &&
+      one(data.aws_iam_policy_document.external_secrets_trust.statement[0].principals).type == "AWS" &&
+      toset(one(data.aws_iam_policy_document.external_secrets_trust.statement[0].principals).identifiers) == toset(["arn:aws:iam::123456789012:role/cryptobot-external-secrets"])
+    )
+    error_message = "Only the External Secrets controller's role may assume (and tag) the dev role."
+  }
+
+  assert {
+    condition = {
+      for c in data.aws_iam_policy_document.external_secrets_trust.statement[0].condition :
+      c.variable => "${c.test} ${join(",", c.values)}"
+      } == {
+      "aws:RequestTag/esoNamespace" = "StringEquals dev"
+      "aws:RequestTag/esoStoreKind" = "StringEquals SecretStore"
+    }
+    error_message = "The dev role may be assumed only with the session tags of a SecretStore in the dev namespace."
+  }
+
+  assert {
+    condition = (
+      length(data.aws_iam_policy_document.external_secrets_read.statement) == 1 &&
+      toset(data.aws_iam_policy_document.external_secrets_read.statement[0].actions) == toset(["secretsmanager:GetSecretValue"]) &&
+      toset(data.aws_iam_policy_document.external_secrets_read.statement[0].resources) == toset(["arn:aws:secretsmanager:eu-central-1:123456789012:secret:cryptobot/dev/*"])
+    )
+    error_message = "The dev role may only read the values of the cryptobot/dev/* secrets."
+  }
+
+  assert {
+    condition = (
+      aws_iam_role.external_secrets.name == "cryptobot-dev-external-secrets" &&
+      aws_iam_role.external_secrets.assume_role_policy == data.aws_iam_policy_document.external_secrets_trust.json &&
+      aws_iam_role_policy.external_secrets_read.policy == data.aws_iam_policy_document.external_secrets_read.json
+    )
+    error_message = "The role must be named for the controller's permission (cryptobot-*-external-secrets) and use the trust and read policies."
+  }
+}
+
 # IDs and host names exist only after an apply. The mock apply invents them, which is
 # enough to check that each database is wired to its own security group and endpoint.
 run "each_database_gets_its_own_security_group_and_endpoint" {
@@ -215,6 +290,26 @@ run "each_database_gets_its_own_security_group_and_endpoint" {
     )
     error_message = "Each endpoint secret must hold its own database's host name (without the port), port and database name."
   }
+
+  assert {
+    condition = (
+      kubernetes_manifest.secret_store.manifest.apiVersion == "external-secrets.io/v1" &&
+      kubernetes_manifest.secret_store.manifest.kind == "SecretStore" &&
+      kubernetes_manifest.secret_store.manifest.metadata.namespace == "dev" &&
+      kubernetes_manifest.secret_store.manifest.metadata.name == "aws-secrets-manager"
+    )
+    error_message = "The dev namespace needs a namespaced SecretStore (never a ClusterSecretStore)."
+  }
+
+  assert {
+    condition = kubernetes_manifest.secret_store.manifest.spec.provider.aws == {
+      service           = "SecretsManager"
+      region            = "eu-central-1"
+      role              = aws_iam_role.external_secrets.arn
+      sessionTagsPolicy = "Simple"
+    }
+    error_message = "The SecretStore must use the dev role with sessionTagsPolicy Simple, and nothing else (no hand-written session tags, no other credentials)."
+  }
 }
 
 run "plan_stops_while_the_platform_is_destroyed" {
@@ -227,5 +322,5 @@ run "plan_stops_while_the_platform_is_destroyed" {
     }
   }
 
-  expect_failures = [aws_db_subnet_group.postgres, aws_docdb_subnet_group.mongo]
+  expect_failures = [aws_db_subnet_group.postgres, aws_docdb_subnet_group.mongo, data.aws_eks_cluster.this]
 }

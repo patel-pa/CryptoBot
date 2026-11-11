@@ -19,7 +19,7 @@ output "node_security_group_id" {
 }
 
 output "external_secrets_controller_role_arn" {
-  description = "Pod Identity role of the External Secrets controller; the envs layers' roles trust it (with the esoNamespace session tag)."
+  description = "Pod Identity role of the External Secrets controller; the envs layers' roles trust it (with the esoNamespace and esoStoreKind session tags)."
   value       = module.external_secrets_pod_identity.iam_role_arn
 }
 

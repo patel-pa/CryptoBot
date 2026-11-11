@@ -6,6 +6,16 @@ output "secret_names" {
   )
 }
 
+output "secret_store_name" {
+  description = "SecretStore in the dev namespace that the overlay's ExternalSecrets refer to."
+  value       = local.secret_store_name
+}
+
+output "external_secrets_role_arn" {
+  description = "Role the External Secrets controller assumes for the dev namespace."
+  value       = aws_iam_role.external_secrets.arn
+}
+
 output "postgres_identifier" {
   description = "RDS instance of dev (for the AWS console and CLI)."
   value       = aws_db_instance.postgres.identifier

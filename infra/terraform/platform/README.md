@@ -64,8 +64,8 @@ role a namespace uses, and with which session tags, is set in its **SecretStore*
    SecretStore of each namespace is created by the envs layer, which only the owner applies,
    with that environment's role and `sessionTagsPolicy: Simple`.
 2. **AWS:** each environment role trusts the controller only when the session tag
-   `esoNamespace` names its own namespace. With `sessionTagsPolicy: Simple`, External Secrets
-   sets that tag to the store's namespace.
+   `esoNamespace` names its own namespace and `esoStoreKind` is `SecretStore`. With
+   `sessionTagsPolicy: Simple`, External Secrets sets those tags from the store.
 
 Lock 1 is needed: with the default policy `None`, a SecretStore may list any session tags by
 hand (External Secrets 2.14.0), including `esoNamespace=prod`.

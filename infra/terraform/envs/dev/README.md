@@ -1,7 +1,8 @@
 # Terraform environment layer: dev
 
-The dev databases and their passwords. Created after the platform layer at the start of a work
-session and **destroyed before it** at the end: the databases sit in the platform's network.
+The dev databases, their passwords, and how the `dev` namespace may read them. Created after
+the platform layer at the start of a work session and **destroyed before it** at the end: the
+databases sit in the platform's network, and the SecretStore in its cluster.
 Dev starts empty in every session; the backfill Job reloads the history from Binance. The state
 lives in the bootstrap layer's bucket under `envs/dev/`.
 
@@ -12,6 +13,8 @@ lives in the bootstrap layer's bucket under `envs/dev/`.
 | 2 subnet groups | the platform's two private subnets | Databases are never reachable from the internet |
 | 2 security groups | inbound only from the EKS nodes' security group, on 5432 / 27017; no outbound rules | Only pods in the cluster can connect |
 | 4 Secrets Manager secrets | `cryptobot/dev/postgres`, `…/postgres-endpoint`, `…/mongo`, `…/mongo-endpoint` | The app's connection settings, read by External Secrets |
+| IAM role `cryptobot-dev-external-secrets` | trusted by the External Secrets controller only for a SecretStore in `dev`; may only read `cryptobot/dev/*` | Dev can never read prod's secrets |
+| SecretStore `aws-secrets-manager` | in the `dev` namespace, uses that role, `sessionTagsPolicy: Simple` | What the dev overlay's ExternalSecrets refer to |
 
 Both databases: backups kept 1 day, no deletion protection, no final snapshot, no Performance
 Insights, no enhanced monitoring, no log exports. PostgreSQL gets minor version updates
@@ -49,10 +52,31 @@ passwords with it.
 The secrets are deleted at once on destroy (`recovery_window_in_days = 0`), so the next session
 can create the same names again.
 
+## How the dev namespace reads its secrets (and never prod's)
+
+External Secrets has one AWS identity for the whole cluster (the platform's
+`cryptobot-external-secrets`, through Pod Identity). That identity may only assume roles named
+`cryptobot-*-external-secrets`, and which one a namespace uses is set in its SecretStore. Two
+locks:
+
+1. **Kubernetes:** only this layer creates the SecretStore of `dev`. Deploy jobs may create
+   `ExternalSecret`s there ("I need this secret"), never `SecretStore`s ("read with this role")
+   (platform layer RBAC). The store says `sessionTagsPolicy: Simple`, so External Secrets tags
+   every sign-in with the store's namespace and kind (`esoNamespace`, `esoStoreKind`, also
+   `esoStoreName`) and ignores hand-written tags.
+2. **AWS:** the role trusts the controller only when the request carries `esoNamespace = dev`
+   and `esoStoreKind = SecretStore`, on `sts:AssumeRole` itself (a sign-in without tags is
+   refused too). Its only permission is `secretsmanager:GetSecretValue` on `cryptobot/dev/*`.
+
+The trust policy names the controller's role by ARN; AWS resolves that to the role's internal
+ID when the policy is saved. A re-created controller role (new platform) is a different role,
+so this layer must be re-created after the platform, which the session order does anyway.
+
 ## Prerequisites
 
 - The bootstrap and platform layers are applied. Without the platform's outputs, the plan stops
-  with "apply the platform layer first".
+  with "apply the platform layer first". The plan also talks to the cluster (the SecretStore is
+  a Kubernetes object), with a token from the same AWS credentials (`aws eks get-token`).
 - **Terraform 1.17 or newer** (the other layers accept 1.14). The tests mock an ephemeral
   resource (`mock_ephemeral`), and `terraform init` already reads the test files, so older
   versions stop at once with "does not support Terraform version".
@@ -76,7 +100,20 @@ In PowerShell, quote an argument that starts with `-` and contains a dot:
 `terraform plan -destroy '-out=destroy.tfplan'`.
 
 **Order matters:** destroy this layer **before** the platform layer. Its security groups refer to
-the nodes' security group and sit in the platform's VPC, which cannot be deleted while they exist.
+the nodes' security group and sit in the platform's VPC, which cannot be deleted while they exist,
+and its SecretStore can only be deleted while the cluster still runs.
+
+**If the platform was destroyed first anyway** (its destroy then stops with the cluster gone and
+the databases still running): the normal destroy plan of this layer fails too, because it reads
+the cluster (`couldn't find resource`). The SecretStore is already gone with the cluster, so
+forget it and plan without re-reading anything:
+
+```bash
+terraform state rm kubernetes_manifest.secret_store
+terraform plan -destroy -refresh=false -out=destroy.tfplan   # have it reviewed
+terraform apply destroy.tfplan
+# then run the platform's destroy again
+```
 
 ## Cost while it exists (Frankfurt list prices)
 
