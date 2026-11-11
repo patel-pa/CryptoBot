@@ -77,12 +77,19 @@ cd infra/terraform/platform
 terraform init
 terraform plan -out=tfplan                     # have it reviewed before applying
 terraform apply tfplan
-# ... work ...
+# then apply envs/dev (its README) ... work ... destroy envs/dev FIRST, then:
 terraform plan -destroy -out=destroy.tfplan    # have it reviewed before destroying
 terraform apply destroy.tfplan
 ```
 
+The envs layers build on this one: apply them after it and destroy them before it. Their
+databases sit in this VPC and their security groups refer to the nodes' security group, so
+while they exist the destroy of this layer fails (after ~20 minutes of retries) with the
+cluster already gone and the databases still running.
+
 ## Teardown: what Terraform did not create
+
+First destroy `envs/dev` (and later `envs/prod`) with their own plan and apply (see above).
 
 The AWS Load Balancer Controller creates an **ALB** (and its security groups) for every
 Ingress, outside Terraform. Remove it before destroying this layer, or it keeps running and
