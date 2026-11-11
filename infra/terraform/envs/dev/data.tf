@@ -41,6 +41,17 @@ data "aws_eks_cluster" "this" {
   }
 }
 
+# The model bucket of the bootstrap layer (kept forever; one prefix per environment).
+data "terraform_remote_state" "bootstrap" {
+  backend = "s3"
+
+  config = {
+    bucket = "cryptobot-tfstate-patel-pa"
+    key    = "bootstrap/terraform.tfstate"
+    region = "eu-central-1"
+  }
+}
+
 data "aws_caller_identity" "current" {}
 
 data "aws_partition" "current" {}

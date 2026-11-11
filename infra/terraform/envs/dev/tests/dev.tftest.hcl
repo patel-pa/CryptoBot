@@ -25,6 +25,45 @@ mock_provider "aws" {
   }
 }
 
+# What the bootstrap layer's state would provide.
+override_data {
+  target = data.terraform_remote_state.bootstrap
+  values = {
+    outputs = {
+      model_bucket = "cryptobot-models-test"
+    }
+  }
+}
+
+# Distinct (valid) JSON per pod role document, so the tests can see which one a role uses.
+override_data {
+  target = data.aws_iam_policy_document.pod_trust["api"]
+  values = {
+    json = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"ApiTrust\",\"Effect\":\"Allow\",\"Action\":\"sts:AssumeRole\",\"Principal\":{\"Service\":\"pods.eks.amazonaws.com\"}}]}"
+  }
+}
+
+override_data {
+  target = data.aws_iam_policy_document.pod_trust["retrain"]
+  values = {
+    json = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"RetrainTrust\",\"Effect\":\"Allow\",\"Action\":\"sts:AssumeRole\",\"Principal\":{\"Service\":\"pods.eks.amazonaws.com\"}}]}"
+  }
+}
+
+override_data {
+  target = data.aws_iam_policy_document.pod_model_access["api"]
+  values = {
+    json = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"ApiRead\",\"Effect\":\"Allow\",\"Action\":\"s3:GetObject\",\"Resource\":\"*\"}]}"
+  }
+}
+
+override_data {
+  target = data.aws_iam_policy_document.pod_model_access["retrain"]
+  values = {
+    json = "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"RetrainWrite\",\"Effect\":\"Allow\",\"Action\":\"s3:PutObject\",\"Resource\":\"*\"}]}"
+  }
+}
+
 mock_provider "kubernetes" {}
 
 # What the platform layer's state would provide.
@@ -260,10 +299,80 @@ run "dev_role_trusts_only_the_controller_for_dev_and_reads_only_dev" {
   }
 }
 
+run "each_pod_role_serves_one_service_account_with_one_model_right" {
+  command = plan
+
+  assert {
+    condition = alltrue([
+      for sa, doc in data.aws_iam_policy_document.pod_trust :
+      length(doc.statement) == 1 &&
+      toset(doc.statement[0].actions) == toset(["sts:AssumeRole", "sts:TagSession"]) &&
+      one(doc.statement[0].principals).type == "Service" &&
+      toset(one(doc.statement[0].principals).identifiers) == toset(["pods.eks.amazonaws.com"]) &&
+      { for c in doc.statement[0].condition : c.variable => "${c.test} ${join(",", c.values)}" } == {
+        "aws:RequestTag/eks-cluster-name"           = "StringEquals cryptobot"
+        "aws:RequestTag/kubernetes-namespace"       = "StringEquals dev"
+        "aws:RequestTag/kubernetes-service-account" = "StringEquals ${sa}"
+      }
+    ]) && length(data.aws_iam_policy_document.pod_trust) == 2
+    error_message = "Each pod role may be assumed only by EKS Pod Identity for its own service account in the dev namespace of this cluster."
+  }
+
+  assert {
+    condition = {
+      for sa, doc in data.aws_iam_policy_document.pod_model_access :
+      sa => "${join(",", sort(doc.statement[0].actions))} ${join(",", doc.statement[0].resources)} ${length(doc.statement)}"
+      } == {
+      api     = "s3:GetObject arn:aws:s3:::cryptobot-models-test/dev/* 1"
+      retrain = "s3:PutObject arn:aws:s3:::cryptobot-models-test/dev/* 1"
+    }
+    error_message = "api may only read and retrain may only write, and only the dev/ prefix of the model bucket."
+  }
+
+  assert {
+    condition = {
+      for sa, role in aws_iam_role.pod :
+      sa => "${role.name} ${role.assume_role_policy == data.aws_iam_policy_document.pod_trust[sa].json} ${aws_iam_role_policy.pod_model_access[sa].policy == data.aws_iam_policy_document.pod_model_access[sa].json}"
+      } == {
+      api     = "cryptobot-dev-api true true"
+      retrain = "cryptobot-dev-retrain true true"
+    }
+    error_message = "Each role must be named after its service account and use its own trust and model policies."
+  }
+
+  assert {
+    condition = {
+      for sa, assoc in aws_eks_pod_identity_association.pod :
+      sa => "${assoc.cluster_name} ${assoc.namespace} ${assoc.service_account} ${assoc.disable_session_tags}"
+      } == {
+      api     = "cryptobot dev api false"
+      retrain = "cryptobot dev retrain false"
+    }
+    error_message = "Each role must be associated with its own service account in dev, with session tags on (the trust policy needs them)."
+  }
+
+  assert {
+    condition     = output.model_s3 == { bucket = "cryptobot-models-test", key = "dev/model.pkl" }
+    error_message = "The dev overlay must get the model bucket and the dev/ key."
+  }
+}
+
 # IDs and host names exist only after an apply. The mock apply invents them, which is
 # enough to check that each database is wired to its own security group and endpoint.
 run "each_database_gets_its_own_security_group_and_endpoint" {
   command = apply
+
+  # Pod Identity associations accept only well-formed role ARNs; distinct ones per role, so
+  # a swapped association would show.
+  override_resource {
+    target = aws_iam_role.pod["api"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-dev-api" }
+  }
+
+  override_resource {
+    target = aws_iam_role.pod["retrain"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-dev-retrain" }
+  }
 
   assert {
     condition = alltrue([
@@ -309,6 +418,15 @@ run "each_database_gets_its_own_security_group_and_endpoint" {
       sessionTagsPolicy = "Simple"
     }
     error_message = "The SecretStore must use the dev role with sessionTagsPolicy Simple, and nothing else (no hand-written session tags, no other credentials)."
+  }
+
+  assert {
+    condition = alltrue([
+      for sa in ["api", "retrain"] :
+      aws_eks_pod_identity_association.pod[sa].role_arn == aws_iam_role.pod[sa].arn &&
+      aws_iam_role_policy.pod_model_access[sa].role == aws_iam_role.pod[sa].id
+    ])
+    error_message = "Each service account must get its own role, and each role its own model policy."
   }
 }
 

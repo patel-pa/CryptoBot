@@ -16,6 +16,19 @@ output "external_secrets_role_arn" {
   value       = aws_iam_role.external_secrets.arn
 }
 
+output "model_s3" {
+  description = "MODEL_S3_BUCKET and MODEL_S3_KEY for the dev overlay."
+  value = {
+    bucket = local.model_bucket
+    key    = "${local.env}/model.pkl"
+  }
+}
+
+output "pod_role_arns" {
+  description = "Pod Identity roles of the dev service accounts (api reads the model, retrain writes it)."
+  value       = { for sa, role in aws_iam_role.pod : sa => role.arn }
+}
+
 output "postgres_identifier" {
   description = "RDS instance of dev (for the AWS console and CLI)."
   value       = aws_db_instance.postgres.identifier

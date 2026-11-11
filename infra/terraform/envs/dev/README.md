@@ -1,10 +1,11 @@
 # Terraform environment layer: dev
 
-The dev databases, their passwords, and how the `dev` namespace may read them. Created after
-the platform layer at the start of a work session and **destroyed before it** at the end: the
-databases sit in the platform's network, and the SecretStore in its cluster.
-Dev starts empty in every session; the backfill Job reloads the history from Binance. The state
-lives in the bootstrap layer's bucket under `envs/dev/`.
+The dev databases, their passwords, how the `dev` namespace may read them, and the dev pods'
+AWS rights. Created after the platform layer at the start of a work session and **destroyed
+before it** at the end: the databases sit in the platform's network, and the SecretStore and
+the Pod Identity associations in its cluster. Dev starts empty in every session; the backfill
+Job reloads the history from Binance. The state lives in the bootstrap layer's bucket under
+`envs/dev/`.
 
 | Resource | Details | Why |
 |---|---|---|
@@ -15,6 +16,7 @@ lives in the bootstrap layer's bucket under `envs/dev/`.
 | 4 Secrets Manager secrets | `cryptobot/dev/postgres`, `…/postgres-endpoint`, `…/mongo`, `…/mongo-endpoint` | The app's connection settings, read by External Secrets |
 | IAM role `cryptobot-dev-external-secrets` | trusted by the External Secrets controller only for a SecretStore in `dev`; may only read `cryptobot/dev/*` | Dev can never read prod's secrets |
 | SecretStore `aws-secrets-manager` | in the `dev` namespace, uses that role, `sessionTagsPolicy: Simple` | What the dev overlay's ExternalSecrets refer to |
+| IAM roles `cryptobot-dev-api`, `cryptobot-dev-retrain` + Pod Identity associations | `api` may read, `retrain` may write `dev/*` in the model bucket | The model moves through S3, never between environments |
 
 Both databases: backups kept 1 day, no deletion protection, no final snapshot, no Performance
 Insights, no enhanced monitoring, no log exports. PostgreSQL gets minor version updates
@@ -71,6 +73,32 @@ locks:
 The trust policy names the controller's role by ARN; AWS resolves that to the role's internal
 ID when the policy is saved. A re-created controller role (new platform) is a different role,
 so this layer must be re-created after the platform, which the session order does anyway.
+
+## AWS rights of the dev pods (EKS Pod Identity)
+
+One IAM role per Kubernetes service account (`k8s/base/serviceaccounts.yaml`); the service
+account `cryptobot` (all other pods) gets no AWS rights.
+
+| Service account | Role | May do | Because the app calls |
+|---|---|---|---|
+| `api` | `cryptobot-dev-api` | `s3:GetObject` on `<model bucket>/dev/*` | `head_object`, `get_object` |
+| `retrain` | `cryptobot-dev-retrain` | `s3:PutObject` on `<model bucket>/dev/*` | `put_object` |
+
+Each role trusts only EKS Pod Identity, and only when its session tags (set by Pod Identity
+itself) say cluster `cryptobot`, namespace `dev` and the role's own service account. So even an
+association to the wrong service account would get no credentials. The model bucket comes from
+the bootstrap layer (one prefix per environment): dev can never read or overwrite prod's model.
+The overlay sets `MODEL_S3_BUCKET` and `MODEL_S3_KEY=dev/model.pkl` (output `model_s3`).
+
+Without `s3:ListBucket`, S3 answers 403 instead of 404 while no model exists yet: until the
+first retrain has run, the API logs
+`no model at s3://…/dev/model.pkl: AccessDenied('… when calling the GetObject operation: Access Denied')`.
+That is expected, not a permission problem.
+
+Pods get their credentials when they are created (EKS adds them to the pod at that moment).
+So apply this layer **before** deploying the app; a pod that started earlier gets no AWS
+credentials until it restarts (`kubectl -n dev rollout restart deployment/api`). CronJob runs
+are not affected: every run creates new pods.
 
 ## Prerequisites
 
