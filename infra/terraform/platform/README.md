@@ -24,6 +24,16 @@ outputs (the CI role ARNs and the log group names) from that layer's state, read
 Subnet tags tell the AWS Load Balancer Controller where to put load balancers:
 `kubernetes.io/role/elb` (public) and `kubernetes.io/role/internal-elb` (private).
 
+Every AWS resource Terraform creates in this layer carries `Project=cryptobot`, `Layer=platform`
+and `ManagedBy=terraform` (the provider's `default_tags`). Those do not reach what the node
+group's launch template starts, so the launch template passes them on to the node servers, their
+disks and their primary network cards, plus `Name=cryptobot-node`. Changing these tags therefore
+makes a new launch template version, and EKS replaces both nodes one by one (~10–15 min). The
+ALBs, target groups and security groups the Load Balancer Controller creates carry
+`Project=cryptobot` and `ManagedBy=aws-load-balancer-controller`. Only AWS's own tags are on the
+extra network cards the VPC CNI attaches for pod addresses and on the security group EKS creates
+for the cluster; both are free and disappear with the nodes and the cluster.
+
 ## Prerequisites
 
 - The bootstrap layer is applied (state bucket, CI roles, log groups).

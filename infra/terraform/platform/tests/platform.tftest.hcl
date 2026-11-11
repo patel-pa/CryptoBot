@@ -109,6 +109,16 @@ run "cluster_is_pinned_and_each_deploy_role_edits_only_its_namespace" {
   }
 
   assert {
+    condition = local.node_tags == {
+      Project   = "cryptobot"
+      Layer     = "platform"
+      ManagedBy = "terraform"
+      Name      = "cryptobot-node"
+    }
+    error_message = "The node servers, their disks and primary network cards must carry the project tags (default_tags do not reach them) and a readable name."
+  }
+
+  assert {
     condition     = module.eks.cluster_version == "1.37"
     error_message = "The cluster must run Kubernetes 1.37."
   }
@@ -179,6 +189,16 @@ run "controllers_are_pinned_and_deploy_jobs_cannot_change_secret_stores" {
       local.lb_controller_values.serviceAccount.name == "aws-load-balancer-controller"
     )
     error_message = "Load Balancer Controller: Service webhook off, one replica, region and VPC set, its service account."
+  }
+
+  assert {
+    condition     = local.lb_controller_values.defaultTags == { Project = "cryptobot", ManagedBy = "aws-load-balancer-controller" }
+    error_message = "Every ALB, target group and security group the Load Balancer Controller creates must carry the project tag."
+  }
+
+  assert {
+    condition     = module.aws_lb_controller_pod_identity.iam_policy_name == "cryptobot-aws-lb-controller"
+    error_message = "The Load Balancer Controller's IAM policy must carry the project name, not the module's generic one."
   }
 
   assert {

@@ -19,6 +19,10 @@ locals {
     instance_types = ["t3.medium"]
     node_count     = 2
   }
+
+  # Tags for the node servers, their disks and primary network cards (written into the
+  # launch template's tag specifications); the name shows up in the EC2 console.
+  node_tags = merge(local.tags, { Name = "${var.cluster_name}-node" })
 }
 
 module "eks" {
@@ -78,6 +82,8 @@ module "eks" {
       min_size       = local.cluster.node_count
       max_size       = local.cluster.node_count
       desired_size   = local.cluster.node_count
+
+      launch_template_tags = local.node_tags
     }
   }
 

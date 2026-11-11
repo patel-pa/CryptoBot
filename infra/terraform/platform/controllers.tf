@@ -12,6 +12,12 @@ locals {
     # cluster and, with failurePolicy Fail, reject them all while its single pod is down.
     enableServiceMutatorWebhook = false
     serviceAccount              = { name = "aws-load-balancer-controller" }
+    # On every ALB, target group and security group it creates (outside Terraform), so a
+    # forgotten one is easy to find and to attribute.
+    defaultTags = {
+      Project   = local.tags.Project
+      ManagedBy = "aws-load-balancer-controller"
+    }
   }
 
   external_secrets_values = {
@@ -45,6 +51,7 @@ module "aws_lb_controller_pod_identity" {
   name                            = "${var.cluster_name}-aws-lb-controller"
   use_name_prefix                 = false
   attach_aws_lb_controller_policy = true
+  aws_lb_controller_policy_name   = "${var.cluster_name}-aws-lb-controller" # not the generic module name
 
   associations = {
     controller = {
