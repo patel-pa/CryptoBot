@@ -182,10 +182,11 @@ run "repository_must_be_owner_slash_name" {
 }
 
 # Which policy JSON each role gets is only known after apply. With the mock provider
-# an apply creates nothing real; the target keeps it to the roles and their policies
-# (no buckets, which could not be destroyed at the end of the test because of
-# prevent_destroy; the two "-target" warnings this prints are expected). Each document
-# has a distinct JSON, so a role wired to the wrong one fails.
+# an apply creates nothing real; the target keeps it small: the roles, their policies
+# and what they depend on (the OIDC provider and the ECR repository, whose ARN the
+# policies use). The two "-target" warnings this prints are expected. Teardown ignores
+# prevent_destroy only from Terraform 1.14 on, hence required_version in versions.tf.
+# Each document has a distinct JSON, so a role wired to the wrong one fails.
 run "each_role_uses_its_own_policies" {
   command = apply
 

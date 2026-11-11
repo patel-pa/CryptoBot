@@ -12,6 +12,10 @@ resource "aws_ecr_repository" "app" {
   encryption_configuration {
     encryption_type = "AES256"
   }
+
+  lifecycle {
+    prevent_destroy = true # its images are the rollback history
+  }
 }
 
 # Rollback = redeploy an older SHA, so old images are kept: the newest 10 images

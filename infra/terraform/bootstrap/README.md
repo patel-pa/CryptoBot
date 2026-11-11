@@ -33,7 +33,8 @@ versioned (old versions deleted after 90 days) and protected by `prevent_destroy
 
 ## Prerequisites
 
-- Terraform 1.10 or newer, AWS CLI v2.
+- Terraform 1.14 or newer (1.14.9 or newer if your credentials come from `aws login`: the S3
+  state backend of older versions cannot read them), AWS CLI v2.
 - An AWS CLI profile with administrator rights in the target account, for example through
   IAM Identity Center (`aws configure sso`, then `aws sso login --profile <name>`).
   Terraform reads it from the environment:
@@ -91,8 +92,9 @@ terraform test          # tests/*.tftest.hcl, against a mock AWS provider
 
 ## Never destroyed
 
-Every bucket here has `prevent_destroy`, so `terraform destroy` stops with an error by
-design. The ECR repository cannot be deleted while it still holds images.
+Every bucket and the ECR repository have `prevent_destroy`, so `terraform destroy` (or a
+change that would replace one of them) stops with an error by design. The images in ECR are
+the rollback history; AWS also refuses to delete a repository that still holds images.
 
 ## Deliberately not enabled (cost over extra protection)
 
