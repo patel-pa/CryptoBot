@@ -1,9 +1,9 @@
-# AWS rights for the dev pods, through EKS Pod Identity: one IAM role per Kubernetes
-# service account (k8s/base/serviceaccounts.yaml). The service account `cryptobot` (the
-# other pods) gets no AWS rights at all.
+# AWS rights for this environment's pods, through EKS Pod Identity: one IAM role per
+# Kubernetes service account (k8s/base/serviceaccounts.yaml). The service account
+# `cryptobot` (the other pods) gets no AWS rights at all.
 #
 # The model lives in the bootstrap layer's bucket under one prefix per environment
-# (dev/model.pkl, later prod/model.pkl), so dev can never read or overwrite prod's model.
+# (dev/model.pkl, prod/model.pkl), so dev can never read or overwrite prod's model.
 # Exactly the calls src/models/model_store.py makes:
 #   api      head_object + get_object → s3:GetObject (also covers HeadObject)
 #   retrain  put_object               → s3:PutObject
@@ -12,16 +12,14 @@
 # Denied)". That is expected, not a permission problem.
 
 locals {
-  model_bucket = data.terraform_remote_state.bootstrap.outputs.model_bucket
-
   pod_roles = {
     api     = ["s3:GetObject"]
     retrain = ["s3:PutObject"]
   }
 }
 
-# Only EKS Pod Identity may assume a role, and only for this cluster, the dev namespace and
-# the role's own service account (session tags that Pod Identity sets itself).
+# Only EKS Pod Identity may assume a role, and only for this cluster, this environment's
+# namespace and the role's own service account (session tags that Pod Identity sets itself).
 data "aws_iam_policy_document" "pod_trust" {
   for_each = local.pod_roles
 
@@ -37,13 +35,13 @@ data "aws_iam_policy_document" "pod_trust" {
     condition {
       test     = "StringEquals"
       variable = "aws:RequestTag/eks-cluster-name"
-      values   = [local.platform.cluster_name]
+      values   = [var.platform.cluster_name]
     }
 
     condition {
       test     = "StringEquals"
       variable = "aws:RequestTag/kubernetes-namespace"
-      values   = [local.env]
+      values   = [var.env]
     }
 
     condition {
@@ -60,22 +58,22 @@ data "aws_iam_policy_document" "pod_model_access" {
   statement {
     sid       = "ThisEnvironmentsModelOnly"
     actions   = each.value
-    resources = ["arn:${data.aws_partition.current.partition}:s3:::${local.model_bucket}/${local.env}/*"]
+    resources = ["arn:${data.aws_partition.current.partition}:s3:::${var.model_bucket}/${var.env}/*"]
   }
 }
 
 resource "aws_iam_role" "pod" {
   for_each = local.pod_roles
 
-  name               = "cryptobot-${local.env}-${each.key}"
-  description        = "Pod Identity role of the ${each.key} service account in ${local.env}"
+  name               = "cryptobot-${var.env}-${each.key}"
+  description        = "Pod Identity role of the ${each.key} service account in ${var.env}"
   assume_role_policy = data.aws_iam_policy_document.pod_trust[each.key].json
 }
 
 resource "aws_iam_role_policy" "pod_model_access" {
   for_each = local.pod_roles
 
-  name   = "${local.env}-model"
+  name   = "${var.env}-model"
   role   = aws_iam_role.pod[each.key].id
   policy = data.aws_iam_policy_document.pod_model_access[each.key].json
 }
@@ -83,8 +81,8 @@ resource "aws_iam_role_policy" "pod_model_access" {
 resource "aws_eks_pod_identity_association" "pod" {
   for_each = local.pod_roles
 
-  cluster_name    = local.platform.cluster_name
-  namespace       = local.env
+  cluster_name    = var.platform.cluster_name
+  namespace       = var.env
   service_account = each.key
   role_arn        = aws_iam_role.pod[each.key].arn
 

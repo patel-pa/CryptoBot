@@ -1,106 +1,31 @@
 # Terraform environment layer: dev
 
 The dev databases, their passwords, how the `dev` namespace may read them, and the dev pods'
-AWS rights. Created after the platform layer at the start of a work session and **destroyed
-before it** at the end: the databases sit in the platform's network, and the SecretStore and
-the Pod Identity associations in its cluster. Dev starts empty in every session; the backfill
-Job reloads the history from Binance. The state lives in the bootstrap layer's bucket under
-`envs/dev/`.
+AWS rights: the shared module [`modules/environment`](../../modules/environment/README.md) with
+dev's values (`main.tf`). Created after the platform layer at the start of a work session and
+**destroyed before it** at the end: the databases sit in the platform's network, and the
+SecretStore and the Pod Identity associations in its cluster. The state lives in the bootstrap
+layer's bucket under `envs/dev/`.
 
-| Resource | Details | Why |
-|---|---|---|
-| RDS PostgreSQL `cryptobot-dev-postgres` | PostgreSQL 18, `db.t4g.micro`, 20 GB gp3, one zone, encrypted | The batch pipeline's database; the smallest size |
-| DocumentDB `cryptobot-dev-mongo` | 8.0, one `db.t4g.medium` instance, encrypted | The stream's database (MongoDB-compatible) |
-| 2 subnet groups | the platform's two private subnets | Databases are never reachable from the internet |
-| 2 security groups | inbound only from the EKS nodes' security group, on 5432 / 27017; no outbound rules | Only pods in the cluster can connect |
-| 4 Secrets Manager secrets | `cryptobot/dev/postgres`, `…/postgres-endpoint`, `…/mongo`, `…/mongo-endpoint` | The app's connection settings, read by External Secrets |
-| IAM role `cryptobot-dev-external-secrets` | trusted by the External Secrets controller only for a SecretStore in `dev`; may only read `cryptobot/dev/*` | Dev can never read prod's secrets |
-| SecretStore `aws-secrets-manager` | in the `dev` namespace, uses that role, `sessionTagsPolicy: Simple` | What the dev overlay's ExternalSecrets refer to |
-| IAM roles `cryptobot-dev-api`, `cryptobot-dev-retrain` + Pod Identity associations | `api` may read, `retrain` may write `dev/*` in the model bucket | The model moves through S3, never between environments |
+## Dev's values
 
-Both databases: backups kept 1 day, no deletion protection, no final snapshot, no Performance
-Insights, no enhanced monitoring, no log exports. PostgreSQL gets minor version updates
-automatically; DocumentDB never applies minor updates on its own (8.0.2 stays 8.0.2). TLS is enforced by
-AWS's default parameter groups (`rds.force_ssl = 1` for PostgreSQL 18, `tls = tls1.2+` for
-DocumentDB 8.0). The major versions match docker compose and the kind overlay (`postgres:18`,
-`mongo:8.0`); change them together.
+Dev holds nothing that cannot be reloaded from Binance: it starts empty in every session, and
+the ingest job reloads the last day.
 
-## Passwords: never in the Terraform state
+| Setting | dev |
+|---|---|
+| PostgreSQL `cryptobot-dev-postgres` | `db.t4g.micro` (the smallest) |
+| DocumentDB `cryptobot-dev-mongo` | one `db.t4g.medium` (the smallest DocumentDB offers) |
+| Automatic backups | 1 day |
+| Deletion protection | off |
+| Final snapshot on destroy | none |
+| Secrets | `cryptobot/dev/postgres`, `…/postgres-endpoint`, `…/mongo`, `…/mongo-endpoint` |
+| External Secrets role | `cryptobot-dev-external-secrets` (reads only `cryptobot/dev/*`) |
+| Pod roles | `cryptobot-dev-api` (reads), `cryptobot-dev-retrain` (writes) `dev/*` in the model bucket |
 
-Per database there are two secrets:
-
-1. **Credentials** (`cryptobot/dev/postgres`: `username`, `password`), written first. AWS
-   generates the password at apply time (`ephemeral "aws_secretsmanager_random_password"`,
-   letters and digits only) and Terraform writes it with a write-only argument
-   (`secret_string_wo`): it appears in neither the state nor the plan.
-2. **Endpoint** (`cryptobot/dev/postgres-endpoint`: `host`, `port`, `dbname`), written after the
-   database exists. Not secret, but this way no account-specific host name lives in the public
-   repository.
-
-The databases read their passwords back from exactly the secret versions just written
-(`password_wo`, `master_password_wo`), so both get the same password, even when a first apply
-fails half-way. External Secrets merges both secrets of a database into one Kubernetes Secret.
-
-**New passwords:** raise `password_version` in `secrets.tf` and apply. The secrets get new values
-first, then the databases read them back. Running pods keep the old password until they restart,
-and External Secrets copies the new one into Kubernetes only at its next hourly refresh: force
-that first, then restart the pods (commands in `k8s/overlays/dev/external-secrets.yaml`).
-If AWS rejects the database change (for example because the instance is busy), the secret
-already holds the new password while the database keeps the old one, and Terraform cannot see
-the difference (AWS never reports a password): raise `password_version` once more.
-
-Anyone who runs `plan` on this layer reads the dev passwords (the read-back runs at every plan),
-so a future CI plan role needs `secretsmanager:GetSecretValue` on `cryptobot/dev/*` and gets the
-passwords with it.
-
-The secrets are deleted at once on destroy (`recovery_window_in_days = 0`), so the next session
-can create the same names again.
-
-## How the dev namespace reads its secrets (and never prod's)
-
-External Secrets has one AWS identity for the whole cluster (the platform's
-`cryptobot-external-secrets`, through Pod Identity). That identity may only assume roles named
-`cryptobot-*-external-secrets`, and which one a namespace uses is set in its SecretStore. Two
-locks:
-
-1. **Kubernetes:** only this layer creates the SecretStore of `dev`. Deploy jobs may create
-   `ExternalSecret`s there ("I need this secret"), never `SecretStore`s ("read with this role")
-   (platform layer RBAC). The store says `sessionTagsPolicy: Simple`, so External Secrets tags
-   every sign-in with the store's namespace and kind (`esoNamespace`, `esoStoreKind`, also
-   `esoStoreName`) and ignores hand-written tags.
-2. **AWS:** the role trusts the controller only when the request carries `esoNamespace = dev`
-   and `esoStoreKind = SecretStore`, on `sts:AssumeRole` itself (a sign-in without tags is
-   refused too). Its only permission is `secretsmanager:GetSecretValue` on `cryptobot/dev/*`.
-
-The trust policy names the controller's role by ARN; AWS resolves that to the role's internal
-ID when the policy is saved. A re-created controller role (new platform) is a different role,
-so this layer must be re-created after the platform, which the session order does anyway.
-
-## AWS rights of the dev pods (EKS Pod Identity)
-
-One IAM role per Kubernetes service account (`k8s/base/serviceaccounts.yaml`); the service
-account `cryptobot` (all other pods) gets no AWS rights.
-
-| Service account | Role | May do | Because the app calls |
-|---|---|---|---|
-| `api` | `cryptobot-dev-api` | `s3:GetObject` on `<model bucket>/dev/*` | `head_object`, `get_object` |
-| `retrain` | `cryptobot-dev-retrain` | `s3:PutObject` on `<model bucket>/dev/*` | `put_object` |
-
-Each role trusts only EKS Pod Identity, and only when its session tags (set by Pod Identity
-itself) say cluster `cryptobot`, namespace `dev` and the role's own service account. So even an
-association to the wrong service account would get no credentials. The model bucket comes from
-the bootstrap layer (one prefix per environment): dev can never read or overwrite prod's model.
-The overlay sets `MODEL_S3_BUCKET` and `MODEL_S3_KEY=dev/model.pkl` (output `model_s3`).
-
-Without `s3:ListBucket`, S3 answers 403 instead of 404 while no model exists yet: until the
-first retrain has run, the API logs
-`no model at s3://…/dev/model.pkl: AccessDenied('… when calling the GetObject operation: Access Denied')`.
-That is expected, not a permission problem.
-
-Pods get their credentials when they are created (EKS adds them to the pod at that moment).
-So apply this layer **before** deploying the app; a pod that started earlier gets no AWS
-credentials until it restarts (`kubectl -n dev rollout restart deployment/api`). CronJob runs
-are not affected: every run creates new pods.
+What each resource is and why, the passwords, the two locks that keep dev from prod's secrets,
+and the pods' AWS rights: see the [module README](../../modules/environment/README.md).
+**New passwords:** raise `password_version` in `main.tf` and apply (module README, "New passwords").
 
 ## Prerequisites
 
@@ -117,7 +42,7 @@ are not affected: every run creates new pods.
 ```bash
 # after the platform layer:
 cd infra/terraform/envs/dev
-terraform init
+terraform init                                 # again after a change of the module's location or providers
 terraform plan -out=tfplan                     # have it reviewed before applying
 terraform apply tfplan                         # ~10-15 min (DocumentDB is the slow part)
 # deploy the app (README in the repository root: "Deploy to dev on EKS") ... work ...
@@ -142,7 +67,7 @@ the cluster (`couldn't find resource`). The SecretStore is already gone with the
 forget it and plan without re-reading anything:
 
 ```bash
-terraform state rm kubernetes_manifest.secret_store
+terraform state rm module.environment.kubernetes_manifest.secret_store
 terraform plan -destroy -refresh=false -out=destroy.tfplan   # have it reviewed
 terraform apply destroy.tfplan
 # then run the platform's destroy again
@@ -165,25 +90,16 @@ terraform apply destroy.tfplan
 terraform fmt -check -recursive
 terraform init -backend=false
 terraform validate
-terraform test          # tests/*.tftest.hcl, against a mock provider; Terraform 1.17+
+terraform test          # tests/*.tftest.hcl: dev passes its values in; Terraform 1.17+
 ```
 
-## Deliberately not enabled
+The module has its own, larger test suite (module README, "Checks"). Run `init -backend=false`
+in a fresh copy of the folder, or in a folder that was never initialised with the S3 backend:
+in a folder that was, `init` still tries to reach the backend and asks for AWS credentials.
 
-- **Multi-AZ, read replicas, more DocumentDB instances:** a standby doubles the cost; dev can be
-  rebuilt in minutes.
+## Deliberately not enabled (dev only)
+
 - **Deletion protection and a final snapshot:** dev holds no data that cannot be reloaded from
   Binance. (Prod keeps both.)
-- **A separate, less privileged database user for the app:** the app uses the master user.
-- **An own KMS key:** the AWS-managed keys encrypt storage and secrets for free; an own key costs
-  $1 per month and outlives every teardown.
-- **Automatic password rotation:** a rotation would break running pods until they restart.
-- **Performance Insights, enhanced monitoring, log exports:** cost, and log groups that never
-  expire.
-- **IAM database authentication:** the app signs in with the password from Secrets Manager; IAM
-  tokens would need app changes and expire every 15 minutes.
 - **Longer backups:** 1 day is enough for data that can be reloaded (prod keeps 7).
-
-Scanners (Trivy, Checkov) report exactly these choices: no customer-managed KMS key, no
-rotation, no Multi-AZ, no deletion protection, short backups, no logs or monitoring, no IAM
-authentication. Trivy finds nothing HIGH or CRITICAL.
+- Everything both environments leave off: module README, "Deliberately not enabled".

@@ -1,20 +1,20 @@
-# The dev databases: the smallest sizes, one zone, short backups, no deletion protection.
-# Dev starts empty in every session; the backfill Job reloads the history from Binance.
+# The two databases of one environment: one zone, encrypted, private. Size, backup days and
+# deletion protection come from the calling layer; everything else is the same everywhere.
 # TLS is enforced by AWS's default parameter groups (checked 11 Nov 2026: postgres18
 # rds.force_ssl = 1, docdb8.0 tls = tls1.2+), so no own parameter groups.
 
 locals {
-  env  = "dev"
-  name = "cryptobot-${local.env}"
+  name = "cryptobot-${var.env}"
 
   # The settings that decide cost, safety and versions, in one place (the tests check them).
-  # Versions: the same majors as docker compose and the kind overlay (postgres:18, mongo:8.0).
+  # Versions: the same majors as docker compose and the kind overlay (postgres:18, mongo:8.0),
+  # and the same in every environment.
   postgres = {
     engine_version          = "18" # major only: AWS picks the minor and applies minor updates
-    instance_class          = "db.t4g.micro"
+    instance_class          = var.postgres.instance_class
     allocated_storage       = 20 # GB, the gp3 minimum; no storage autoscaling
-    backup_retention_period = 1  # days
-    deletion_protection     = false
+    backup_retention_period = var.postgres.backup_retention_period
+    deletion_protection     = var.deletion_protection
     skip_final_snapshot     = true
     port                    = 5432
     db_name                 = "cryptobot"
@@ -23,10 +23,10 @@ locals {
 
   mongo = {
     engine_version          = "8.0.2" # AWS's default 8.0 version on 11 Nov 2026; never auto-upgraded
-    instance_class          = "db.t4g.medium"
+    instance_class          = var.mongo.instance_class
     instance_count          = 1
-    backup_retention_period = 1
-    deletion_protection     = false
+    backup_retention_period = var.mongo.backup_retention_period
+    deletion_protection     = var.deletion_protection
     skip_final_snapshot     = true
     port                    = 27017
     db_name                 = "cryptobot" # created by the app's first write
@@ -47,7 +47,7 @@ resource "aws_db_instance" "postgres" {
   db_name             = local.postgres.db_name
   username            = local.postgres.username
   password_wo         = local.passwords["postgres"]
-  password_wo_version = local.password_version
+  password_wo_version = var.password_version
   port                = local.postgres.port
 
   db_subnet_group_name   = aws_db_subnet_group.postgres.name
@@ -77,7 +77,7 @@ resource "aws_docdb_cluster" "mongo" {
 
   master_username            = local.mongo.username
   master_password_wo         = local.passwords["mongo"]
-  master_password_wo_version = local.password_version
+  master_password_wo_version = var.password_version
   port                       = local.mongo.port
 
   db_subnet_group_name   = aws_docdb_subnet_group.mongo.name

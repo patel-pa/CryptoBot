@@ -1,5 +1,5 @@
 # Two secrets per database, under fixed names that only this environment's roles may read
-# (cryptobot/dev/*). External Secrets merges both into one Kubernetes Secret.
+# (cryptobot/<env>/*). External Secrets merges both into one Kubernetes Secret.
 #
 # 1. Credentials (username + password), written FIRST. AWS generates the password at apply
 #    time as an ephemeral value: it is written straight into Secrets Manager and never
@@ -7,16 +7,15 @@
 #    so both always get the same password, even when a first apply fails half-way.
 # 2. Endpoint (host, port, database name), written AFTER the database exists. Not secret,
 #    but kept here so no account-specific host name has to live in the public repository.
+#
+# var.password_version: raise it to give both databases new passwords. The secrets get new
+# values first, then the databases read them back. Running pods keep the old password until
+# External Secrets has copied the new one and they restart (README, "New passwords"). If AWS
+# rejects the database change (e.g. the instance is busy), the secret already holds the new
+# password and Terraform cannot see the difference: raise it again.
 
 locals {
   databases = toset(["postgres", "mongo"])
-
-  # Bump to give both databases new passwords: the secrets get new values first, then the
-  # databases read them back. Running pods keep the old password until External Secrets
-  # has copied the new one and they restart (README, "New passwords"). If
-  # AWS rejects the database change (e.g. the instance is busy), the secret already holds
-  # the new password and Terraform cannot see the difference: bump the number again.
-  password_version = 1
 }
 
 ephemeral "aws_secretsmanager_random_password" "db" {
@@ -29,8 +28,8 @@ ephemeral "aws_secretsmanager_random_password" "db" {
 resource "aws_secretsmanager_secret" "credentials" {
   for_each = local.databases
 
-  name        = "cryptobot/${local.env}/${each.key}"
-  description = "${each.key} of ${local.env}: master username and password"
+  name        = "cryptobot/${var.env}/${each.key}"
+  description = "${each.key} of ${var.env}: master username and password"
 
   # Gone at once on destroy, so the next session can create the same name again (the
   # default 30-day recovery window would block it).
@@ -45,7 +44,7 @@ resource "aws_secretsmanager_secret_version" "credentials" {
     username = local.credentials_usernames[each.key]
     password = ephemeral.aws_secretsmanager_random_password.db[each.key].random_password
   })
-  secret_string_wo_version = local.password_version
+  secret_string_wo_version = var.password_version
 }
 
 # The databases' passwords, read back from exactly the secret versions just written
@@ -72,8 +71,8 @@ locals {
 resource "aws_secretsmanager_secret" "endpoint" {
   for_each = local.databases
 
-  name                    = "cryptobot/${local.env}/${each.key}-endpoint"
-  description             = "${each.key} of ${local.env}: host, port and database name"
+  name                    = "cryptobot/${var.env}/${each.key}-endpoint"
+  description             = "${each.key} of ${var.env}: host, port and database name"
   recovery_window_in_days = 0
 }
 
