@@ -72,7 +72,7 @@ src/
 ├── visualization/  # app.py (Streamlit dashboard: historical + live + predictions)
 ├── params/         # constants, enums
 └── utils/          # time / url / dataframe helpers
-k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (kind), overlays/dev (EKS); prod follows
+k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (kind), overlays/dev and overlays/prod (EKS)
 infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/, envs/dev/ and envs/prod/ (destroyed after every session; prod leaves a final snapshot and is restored from it); modules/environment/ = the databases, secrets and roles of one environment, shared by envs/dev and envs/prod
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)

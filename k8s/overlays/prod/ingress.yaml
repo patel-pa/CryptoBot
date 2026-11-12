@@ -1,0 +1,27 @@
+# The dashboard on the internet: the AWS Load Balancer Controller (platform layer) turns
+# this Ingress into one ALB. The API stays internal (no Ingress), so /metrics is private.
+# The ALB is created OUTSIDE Terraform and costs money: delete this Ingress before
+# destroying the infrastructure (README, "Deploy to prod on EKS").
+# Plain HTTP for now (HTTPS needs a domain: a stretch goal).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dashboard
+  annotations:
+    alb.ingress.kubernetes.io/load-balancer-name: cryptobot-prod  # easy to find in the console
+    alb.ingress.kubernetes.io/scheme: internet-facing             # in the public subnets
+    # Straight to the pod's IP (VPC CNI), so the Service can stay ClusterIP.
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /_stcore/health   # Streamlit's own health check
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dashboard
+                port:
+                  name: http

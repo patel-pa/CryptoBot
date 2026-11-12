@@ -1,0 +1,62 @@
+# EKS, namespace `prod`: the same as overlays/dev (a copy with prod's values: its own secrets,
+# model and ALB) plus two API replicas. The namespace, the SecretStore and the pods' AWS
+# rights come from Terraform (platform, envs/prod); apply both first.
+# Steps: see "Deploy to prod on EKS" in the README.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: prod
+
+resources:
+  - ../../base
+  - external-secrets.yaml
+  - ingress.yaml
+  - api-disruption-budget.yaml
+
+# No `images:` here on purpose: the ECR address contains the AWS account ID, which stays
+# out of the repository. The deploy sets it (k8s/deploy/prod, not committed).
+
+configMapGenerator:
+  - name: cryptobot-config
+    behavior: merge
+    literals:
+      # Both databases only accept encrypted connections. verify-full also checks the
+      # server's certificate and host name, against the AWS CA bundle built into the image.
+      - POSTGRES_SSLMODE=verify-full
+      - POSTGRES_SSLROOTCERT=/etc/ssl/aws/global-bundle.pem
+      - MONGO_TLS=true
+      - MONGO_TLS_CA_FILE=/etc/ssl/aws/global-bundle.pem
+      # Model file: one prefix per environment; the api role may read and the retrain role
+      # may write only prod/* (envs/prod, output model_s3).
+      - MODEL_S3_BUCKET=cryptobot-models-patel-pa
+      - MODEL_S3_KEY=prod/model.pkl
+      - AWS_REGION=eu-central-1             # boto3 has no default region
+      # History since a fixed date (dev: only the last day). Loaded once, on the very first
+      # create; after a restore from a snapshot the ingest job fetches only the gap.
+      - HISTORICAL_START_DATE=01.10.2026T00:00
+
+patches:
+  # Two API pods, one per node where possible: the dashboard and the streamer keep an API
+  # while a node is replaced. Rolling updates add the new pod before removing an old one
+  # (maxUnavailable 25% of 2 rounds down to 0). The streamer stays at one pod on purpose:
+  # two would save every candle twice and ask for every forecast twice.
+  - target:
+      kind: Deployment
+      name: api
+    patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: api
+      spec:
+        replicas: 2
+        template:
+          spec:
+            topologySpreadConstraints:
+              - maxSkew: 1
+                topologyKey: kubernetes.io/hostname   # spread over the nodes
+                whenUnsatisfiable: ScheduleAnyway     # a single node still runs both
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: api
+                matchLabelKeys: [pod-template-hash]   # count only pods of the same version
