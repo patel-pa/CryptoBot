@@ -22,9 +22,9 @@ work session.
 A job that sets `environment:` gets the subject `…:environment:<name>` instead of the
 branch, so the dev jobs must not use a GitHub environment (or the trust must change).
 
-The workflows (`.github/workflows/cd.yml` uses `build`) build each role's ARN from the
-repository secret `AWS_ACCOUNT_ID` (GitHub: Settings → Secrets and variables → Actions), so
-the account ID is in no file and GitHub hides it in the public logs. Set it once, with
+The workflows (`.github/workflows/cd.yml` uses `build` and `deploy-dev`) build each role's
+ARN from the repository secret `AWS_ACCOUNT_ID` (GitHub: Settings → Secrets and variables →
+Actions), so the account ID is in no file and GitHub hides it in the public logs. Set it once, with
 `AWS_PROFILE` set as in Prerequisites (check first that `aws sts get-caller-identity` shows the
 right account):
 `gh secret set AWS_ACCOUNT_ID --body "$(aws sts get-caller-identity --query Account --output text)"`.

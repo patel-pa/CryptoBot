@@ -41,7 +41,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 **Dashboard:** Streamlit + Plotly
 **ML:** scikit-learn, pandas, joblib
 **Scheduling:** two commands, `python -m src.cli ingest` and `retrain`, run as Kubernetes CronJobs in v2 (in progress); v1.0 used Apache Airflow
-**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS (in progress), GitHub Actions (CI: flake8 + pytest + image build; CD: tests, Trivy scan, push to Amazon ECR via OIDC)
+**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS (in progress), GitHub Actions (CI: flake8 + pytest + image build; CD: tests, Trivy scan, push to Amazon ECR via OIDC, deploy to the dev namespace on EKS; manual deploy or rollback by SHA)
 **Testing:** pytest
 
 ---
@@ -55,7 +55,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 - **Verified data quality** — **~240,000+** one-minute BTC/USDT candles loaded with **0 gaps** (and growing with every ingest run), confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
 - **Predicted-vs-actual tracking** — every `/predict` call is persisted, so `/predictions` can join each forecast against the candle's real close for later evaluation.
 - **CI on every push** — GitHub Actions runs flake8 (fails on syntax/undefined-name errors), the pytest suite, and a Docker image build.
-- **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA; GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
+- **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA, then deployed to the `dev` namespace on EKS (skipped while no cluster runs); started by hand, it deploys or rolls back to any image already in ECR without rebuilding. GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
 
 ---
 
@@ -76,7 +76,7 @@ k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (
 infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/ and envs/dev/ (destroyed after every session); envs/prod/ follows
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
-.github/workflows/  # CI (python-app.yml); CD (cd.yml): every push to dev → tests, image, Trivy scan, push to ECR
+.github/workflows/  # CI (python-app.yml); CD (cd.yml): every push to dev → tests, image, Trivy scan, push to ECR, deploy to dev (skipped while no cluster runs); by hand: deploy or roll back
 docker-compose.yml  # full stack: postgres, mongo, init, historical, streamer, api, dashboard
 ```
 
@@ -149,9 +149,39 @@ The `ingest` (every 15 min) and `retrain` (daily) CronJobs also run on their own
 
 ---
 
-## Deploy to dev on EKS (by hand, until CD)
+## Deploy to dev on EKS
 
 The same manifests in the `dev` namespace of the EKS cluster: `k8s/overlays/dev` adds the database connection details from AWS Secrets Manager (External Secrets), TLS to RDS and DocumentDB, the model in S3, and the dashboard behind an ALB. Needs the Terraform layers `platform` and then `envs/dev` applied (see their READMEs; pods get their AWS rights only if `envs/dev` exists when they start), the app image in ECR (the CD workflow pushes it after a successful run on `dev`, tagged with the full commit SHA), and kubectl within one minor version of the cluster (1.36–1.38).
+
+### With CD (the normal way)
+
+Every push to `dev` runs `.github/workflows/cd.yml`: after the image job (tests, build, Trivy scan, push to ECR) the deploy job signs in as `cryptobot-github-deploy-dev` (may change only the `dev` namespace) and deploys that commit, then waits until `init-db` has finished and the API, streamer and dashboard run. **Without a running cluster** (between work sessions) it skips with a notice and stays green; a cluster without `envs/dev` (no SecretStore) makes it fail.
+
+Started by hand, the workflow only deploys: no build, no new scan. The image must already be in ECR, i.e. that commit's CD run passed (ECR keeps the newest 30 images). Start it only when no CD run is waiting: GitHub keeps one waiting run per branch and cancels an older one.
+
+```bash
+gh run list --workflow cd.yml --limit 3                    # nothing "queued" or "in_progress"?
+gh workflow run cd.yml --ref dev                           # deploys the newest commit on dev, e.g. after a session's applies
+gh run list --workflow cd.yml --limit 1                    # its run ID; follow it with: gh run watch <run ID>
+
+# Rollback: the newest images in ECR (tag = full commit SHA), then deploy one of them
+aws ecr describe-images --region eu-central-1 --repository-name cryptobot --query "reverse(sort_by(imageDetails[?imageTags],&imagePushedAt))[:5].[imagePushedAt,join(',',imageTags)]" --output text
+gh workflow run cd.yml --ref dev -f image_sha=<full SHA from that list>
+```
+
+The "Run workflow" button in GitHub's Actions tab appears only once `cd.yml` is on the default branch (`main`); until then, use `gh workflow run`.
+
+A **rollback** deploys the old commit as a whole: its manifests together with its image, the pair that was tested together. Objects that only newer commits have (e.g. a new CronJob) stay, because `kubectl apply` deletes nothing. It does not run the tests or Trivy again, so a vulnerability published since then cannot block it.
+
+After the first deploy of a session (dev starts empty), from your laptop:
+
+```bash
+aws eks update-kubeconfig --name cryptobot --region eu-central-1   # = terraform output -raw kubeconfig_command
+kubectl -n dev create job --from=cronjob/retrain retrain-now       # loads the last day, trains, uploads the model
+kubectl -n dev get ingress dashboard -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'   # open http://<that name> (DNS: 1-3 min)
+```
+
+### By hand (fallback)
 
 ```bash
 aws eks update-kubeconfig --name cryptobot --region eu-central-1   # = terraform output -raw kubeconfig_command
@@ -185,9 +215,10 @@ kubectl -n dev get ingress dashboard \
 
 Until the first `retrain` has uploaded a model, `POST /predict` answers 503 and the API logs `AccessDenied` for `dev/model.pkl` (S3 says so for a missing file when the role may not list the bucket).
 
-**Before destroying the infrastructure, remove the app.** Its Ingress owns an ALB that Terraform did not create; it keeps costing money and blocks deleting the VPC:
+**Before destroying the infrastructure, remove the app.** Its Ingress owns an ALB that Terraform did not create; it keeps costing money and blocks deleting the VPC. First make sure no CD run can deploy it again: no push to `dev` from now until `envs/dev` is destroyed, and no CD run waiting or running.
 
 ```bash
+gh run list --workflow cd.yml --limit 3                       # nothing "queued" or "in_progress"
 kubectl delete -k k8s/overlays/dev --ignore-not-found         # the Load Balancer Controller deletes the ALB
 aws elbv2 describe-load-balancers --region eu-central-1 \
   --query "LoadBalancers[].LoadBalancerName"                  # repeat until []

@@ -1,14 +1,29 @@
-# CD, part 1: every push to dev tests the code, builds the app image, scans it and stores
-# it in Amazon ECR under the full commit SHA. Deploying it to EKS is a later step; this
-# workflow needs no running cluster, so it works between work sessions too.
+# CD for the dev environment.
+# - Every push to dev: test, build and scan the app image, store it in Amazon ECR under
+#   the full commit SHA (job "image"), then deploy it to the namespace dev (job "deploy").
+# - By hand (`gh workflow run cd.yml --ref dev`, optionally `-f image_sha=<full SHA>`; the
+#   "Run workflow" button appears only once this file is on the default branch): only the
+#   deploy job, for an image already in ECR. No SHA = the branch's newest commit (e.g. after
+#   the cluster was created); an older commit SHA = rollback. Nothing is rebuilt or scanned
+#   again, so a vulnerability published since then cannot block a rollback.
+# The cluster exists only during work sessions: without it the deploy job skips (green).
 
 name: CD
 
 on:
   push:
     branches: [dev]
+  workflow_dispatch:
+    inputs:
+      image_sha:
+        description: "Full commit SHA (40 characters) of an image in ECR; empty = the branch's newest commit"
+        type: string
+        required: false
+        default: ""
 
 # One run at a time per branch: a newer push waits for the running one instead of racing it.
+# A run started by hand on dev waits too, so two deploys never overlap. GitHub keeps only ONE
+# waiting run per group (a newer one cancels it), so start by hand only when no CD run waits.
 concurrency:
   group: cd-${{ github.ref }}
   cancel-in-progress: false
@@ -27,6 +42,7 @@ env:
 jobs:
   image:
     name: Test, build, scan, push
+    if: github.event_name == 'push'          # started by hand: deploy only, no build
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # No `environment:` on this job: the AWS role trusts exactly "ref:refs/heads/dev"
@@ -125,3 +141,199 @@ jobs:
           digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
                      --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
           echo "Pushed \`$ECR_REPOSITORY:$GITHUB_SHA\` (\`$digest\`)" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to dev
+    needs: image
+    # After a push: only if the image job succeeded. Started by hand: the image job is
+    # skipped, and !cancelled() lets this job run although the job it needs did not.
+    if: >-
+      !cancelled() && (needs.image.result == 'success' ||
+      (github.event_name == 'workflow_dispatch' && needs.image.result == 'skipped'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # No `environment:` either: the deploy-dev role trusts the same "ref:refs/heads/dev".
+    permissions:
+      contents: read
+      id-token: write                       # OIDC token for the AWS sign-in
+    env:
+      CLUSTER_NAME: cryptobot
+      NAMESPACE: dev
+      # kubectl must be within one minor version of the cluster (EKS 1.37). Pinned with its
+      # SHA-256; the file's signature was checked with cosign (signed by the Kubernetes
+      # release account krel-staging@k8s-releng-prod.iam.gserviceaccount.com).
+      KUBECTL_VERSION: v1.37.2
+      KUBECTL_SHA256: c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
+    steps:
+      - name: Check the inputs
+        id: release
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          INPUT_SHA: ${{ inputs.image_sha }}  # through env: never pasted into the script
+        run: |
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || {
+            echo "::error::Repository secret AWS_ACCOUNT_ID is missing or not 12 digits (bootstrap README)"
+            exit 1
+          }
+          # Only dev may deploy to dev (the AWS role would refuse any other branch anyway).
+          [[ "$GITHUB_REF" == refs/heads/dev ]] || {
+            echo "::error::Start this workflow on the branch dev"
+            exit 1
+          }
+          sha=${INPUT_SHA:-$GITHUB_SHA}       # empty field: the commit this run is for
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::image_sha must be a full commit SHA, 40 characters 0-9 a-f (git rev-parse <short SHA>)"
+            exit 1
+          }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Commit to deploy: $sha"
+
+      # The same sign-in as in the image job (keep both in sync), with the deploy-dev role:
+      # it may look up images and reach the cluster; inside Kubernetes its group may change
+      # only the namespace dev (platform layer: access entry + RoleBindings).
+      - name: Sign in to AWS as cryptobot-github-deploy-dev (OIDC)
+        env:
+          ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/cryptobot-github-deploy-dev
+        run: |
+          token=$(curl -sSf --retry 3 --max-time 30 \
+                    -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+                    "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          [[ -n "$token" && "$token" != null ]] || { echo "::error::No OIDC token from GitHub"; exit 1; }
+          echo "::add-mask::$token"
+          creds=$(aws sts assume-role-with-web-identity --role-arn "$ROLE_ARN" \
+                    --role-session-name "cd-deploy-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+                    --web-identity-token "$token" \
+                    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)
+          read -r key secret session <<<"$creds"
+          for value in "$key" "$secret" "$session"; do echo "::add-mask::$value"; done
+          {
+            echo "AWS_ACCESS_KEY_ID=$key"
+            echo "AWS_SECRET_ACCESS_KEY=$secret"
+            echo "AWS_SESSION_TOKEN=$session"
+          } >> "$GITHUB_ENV"
+          echo "Signed in."
+
+      # Only commits whose CD run passed the tests and the scan on dev have an image in ECR,
+      # so this check also stops a rollback to an untested commit.
+      - name: Is the image in ECR?
+        id: image
+        env:
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          if digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+                        --image-ids imageTag="$SHA" \
+                        --query 'imageDetails[0].imageDigest' --output text 2>&1); then
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "Found $ECR_REPOSITORY:$SHA ($digest)"
+          elif grep -q ImageNotFoundException <<<"$digest"; then
+            echo "::error::No image for $SHA in ECR: its CD run failed (tests or scan), was cancelled or never ran (pushed together with a newer commit), or ECR expired it (only the newest 30 are kept)"
+            exit 1
+          else
+            echo "$digest" >&2                # any other error (rights, network): stop here
+            exit 1
+          fi
+
+      # Between work sessions there is no cluster: nothing to deploy to, and that is not an
+      # error. The following steps run only when it is there.
+      - name: Is the cluster running?
+        id: cluster
+        run: |
+          if status=$(aws eks describe-cluster --name "$CLUSTER_NAME" \
+                        --query cluster.status --output text 2>&1); then
+            :                                 # ACTIVE, CREATING, UPDATING, DELETING, FAILED, ...
+          elif grep -q ResourceNotFoundException <<<"$status"; then
+            status=MISSING
+          else
+            echo "$status" >&2
+            exit 1
+          fi
+          if [[ "$status" == ACTIVE || "$status" == UPDATING ]]; then
+            echo "running=true" >> "$GITHUB_OUTPUT"
+            echo "Cluster $CLUSTER_NAME: $status"
+          else
+            echo "running=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Cluster $CLUSTER_NAME is not running ($status): nothing deployed. Once it is (platform + envs/dev applied), start this workflow by hand: gh workflow run cd.yml --ref dev"
+            echo "Not deployed: cluster \`$CLUSTER_NAME\` is not running ($status)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # The manifests of the SAME commit as the image: they were tested together. For a
+      # rollback that means the old commit's manifests too.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.cluster.outputs.running == 'true'
+        with:
+          ref: ${{ steps.release.outputs.sha }}
+          persist-credentials: false
+
+      - name: Install kubectl ${{ env.KUBECTL_VERSION }}
+        if: steps.cluster.outputs.running == 'true'
+        run: |
+          curl -sSfL --retry 3 --max-time 120 -o "$RUNNER_TEMP/kubectl" \
+            "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
+          echo "$KUBECTL_SHA256  $RUNNER_TEMP/kubectl" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m 0755 "$RUNNER_TEMP/kubectl" "$RUNNER_TEMP/bin/kubectl"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"   # before the runner's own kubectl
+          "$RUNNER_TEMP/bin/kubectl" version --client
+
+      - name: Connect kubectl to the cluster
+        id: connect
+        if: steps.cluster.outputs.running == 'true'
+        # Its message names the cluster ARN, which contains the account ID: not printed.
+        run: aws eks update-kubeconfig --name "$CLUSTER_NAME" > /dev/null
+
+      # The SecretStore comes from the envs/dev layer (Terraform). Without it there are no
+      # database passwords and no pod could start: a running cluster without envs/dev is a
+      # half-built session, so this fails instead of skipping.
+      - name: Is envs/dev applied?
+        if: steps.cluster.outputs.running == 'true'
+        run: |
+          kubectl -n "$NAMESPACE" wait secretstore/aws-secrets-manager \
+            --for=condition=Ready --timeout=2m || {
+            echo "::error::SecretStore aws-secrets-manager missing or not Ready in namespace $NAMESPACE: apply envs/dev, then start this workflow by hand"
+            exit 1
+          }
+
+      - name: Deploy
+        if: steps.cluster.outputs.running == 'true'
+        env:
+          REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          # The same wrapper as for a deploy by hand (README): the image address contains
+          # the account ID, so the file exists only on this runner (k8s/deploy/ is ignored).
+          mkdir -p "k8s/deploy/$NAMESPACE"
+          cat > "k8s/deploy/$NAMESPACE/kustomization.yaml" <<EOF
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+            - ../../overlays/$NAMESPACE
+          images:
+            - name: cryptobot-app
+              newName: $REGISTRY/$ECR_REPOSITORY
+              newTag: $SHA
+          EOF
+          # A Job cannot be changed once created: remove the previous init-db first.
+          kubectl -n "$NAMESPACE" delete job init-db --ignore-not-found
+          kubectl apply -k "k8s/deploy/$NAMESPACE"
+
+      - name: Wait until the new version runs
+        if: steps.cluster.outputs.running == 'true'
+        env:
+          SHA: ${{ steps.release.outputs.sha }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          # init-db: each try already waits up to ~3 min for the databases.
+          kubectl -n "$NAMESPACE" wait job/init-db --for=condition=complete --timeout=6m
+          for deployment in api streamer dashboard; do
+            kubectl -n "$NAMESPACE" rollout status "deployment/$deployment" --timeout=5m
+          done
+          echo "Deployed \`$ECR_REPOSITORY:$SHA\` (\`$DIGEST\`) to \`$NAMESPACE\`." >> "$GITHUB_STEP_SUMMARY"
+
+      # Only names, states and Warning events: image addresses in them contain the account
+      # ID, which GitHub prints as *** (it is a secret).
+      - name: Show what went wrong
+        if: failure() && steps.connect.outcome == 'success'
+        run: |
+          kubectl -n "$NAMESPACE" get pods,jobs,externalsecrets || true
+          kubectl -n "$NAMESPACE" get events --field-selector type=Warning \
+            --sort-by=.metadata.creationTimestamp || true

@@ -121,7 +121,8 @@ terraform init
 terraform plan -out=tfplan                     # have it reviewed before applying
 terraform apply tfplan                         # ~10-15 min (DocumentDB is the slow part)
 # deploy the app (README in the repository root: "Deploy to dev on EKS") ... work ...
-# remove the app FIRST: from the repository root, kubectl delete -k k8s/overlays/dev --ignore-not-found
+# remove the app FIRST (and push nothing to dev until this layer is destroyed: CD would deploy it again):
+# from the repository root, kubectl delete -k k8s/overlays/dev --ignore-not-found
 # (deletes the dashboard's ALB), then wait until no load balancer is left
 terraform plan -destroy -out=destroy.tfplan    # have it reviewed before destroying
 terraform apply destroy.tfplan
