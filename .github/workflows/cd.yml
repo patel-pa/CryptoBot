@@ -68,14 +68,36 @@ jobs:
             --no-progress --disable-telemetry --skip-version-check
           rm "$RUNNER_TEMP/image.tar"
 
-      - name: Sign in to AWS as cryptobot-github-build
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          # The account ID is a repository secret: Actions logs of a public repository are
-          # public, and GitHub replaces every secret value in them with ***.
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/cryptobot-github-build
-          aws-region: ${{ env.AWS_REGION }}
-          mask-aws-account-id: true
+      # OIDC by hand instead of aws-actions/configure-aws-credentials: that action always
+      # logs the role's unique ID (AROA...), from which the account ID can be decoded, and
+      # Actions logs of a public repository are public. Here nothing about the identity is
+      # printed: GitHub's token and the temporary AWS keys are masked before any use.
+      - name: Sign in to AWS as cryptobot-github-build (OIDC)
+        env:
+          # A repository secret: GitHub replaces its value with *** in every log line.
+          ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/cryptobot-github-build
+        run: |
+          # 1. A short-lived token from GitHub that says "repo patel-pa/CryptoBot, branch dev"
+          #    (the role's trust policy checks exactly that), for the audience AWS STS.
+          token=$(curl -sSf --retry 3 --max-time 30 \
+                    -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+                    "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          [[ -n "$token" && "$token" != null ]] || { echo "::error::No OIDC token from GitHub"; exit 1; }
+          echo "::add-mask::$token"
+          # 2. Exchange it for temporary AWS keys (1 hour). The call itself needs no keys.
+          creds=$(aws sts assume-role-with-web-identity --role-arn "$ROLE_ARN" \
+                    --role-session-name "cd-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+                    --web-identity-token "$token" \
+                    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)
+          read -r key secret session <<<"$creds"
+          for value in "$key" "$secret" "$session"; do echo "::add-mask::$value"; done
+          # 3. The later steps' aws commands read them from the environment.
+          {
+            echo "AWS_ACCESS_KEY_ID=$key"
+            echo "AWS_SECRET_ACCESS_KEY=$secret"
+            echo "AWS_SESSION_TOKEN=$session"
+          } >> "$GITHUB_ENV"
+          echo "Signed in."
 
       # ECR tags are immutable: a re-run of the same commit must not try to push again.
       - name: Is this commit's image already in ECR?
