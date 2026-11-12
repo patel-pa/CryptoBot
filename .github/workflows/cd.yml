@@ -1,29 +1,34 @@
-# CD for the dev environment.
+# CD for the dev and prod environments.
 # - Every push to dev: test, build and scan the app image, store it in Amazon ECR under
 #   the full commit SHA (job "image"), then deploy it to the namespace dev (job "deploy").
-# - By hand (`gh workflow run cd.yml --ref dev`, optionally `-f image_sha=<full SHA>`; the
-#   "Run workflow" button appears only once this file is on the default branch): only the
-#   deploy job, for an image already in ECR. No SHA = the branch's newest commit (e.g. after
-#   the cluster was created); an older commit SHA = rollback. Nothing is rebuilt or scanned
-#   again, so a vulnerability published since then cannot block a rollback.
-# The cluster exists only during work sessions: without it the deploy job skips (green).
+# - Every push to main (a pull request dev -> main merged with "Create a merge commit"): after
+#   approval in the GitHub environment "production", the SAME image that was tested on dev
+#   goes to the namespace prod (job "deploy-prod"). Nothing is built on main.
+# - By hand (`gh workflow run cd.yml --ref dev` or `--ref main`, optionally
+#   `-f image_sha=<full SHA>`; the "Run workflow" button appears only once this file is on
+#   the default branch): only that branch's deploy job, for an image already in ECR. No SHA =
+#   the branch's newest commit (e.g. after the cluster was created); an older commit SHA =
+#   rollback. Nothing is rebuilt or scanned again, so a vulnerability published since then
+#   cannot block a rollback.
+# The cluster exists only during work sessions: without it the deploy jobs skip (green).
 
 name: CD
 
 on:
   push:
-    branches: [dev]
+    branches: [dev, main]
   workflow_dispatch:
     inputs:
       image_sha:
-        description: "Full commit SHA (40 characters) of an image in ECR; empty = the branch's newest commit"
+        description: "Full commit SHA (40 characters) on the branch you start on: dev = a commit with an image in ECR, main = a merge of dev; empty = the branch's newest commit"
         type: string
         required: false
         default: ""
 
 # One run at a time per branch: a newer push waits for the running one instead of racing it.
-# A run started by hand on dev waits too, so two deploys never overlap. GitHub keeps only ONE
-# waiting run per group (a newer one cancels it), so start by hand only when no CD run waits.
+# A run started by hand waits too, so two deploys of one environment never overlap. GitHub
+# keeps only ONE waiting run per group (a newer one cancels it), so start by hand only when no
+# CD run of that branch waits. (A run waiting for its approval counts as running.)
 concurrency:
   group: cd-${{ github.ref }}
   cancel-in-progress: false
@@ -38,11 +43,18 @@ env:
   # (signed by Aqua's reusable-release.yaml at tag v0.76.2). Not the trivy-action: its
   # version tags were hijacked in March 2026.
   TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+  # For both deploy jobs. kubectl must be within one minor version of the cluster (EKS 1.37).
+  # Pinned with its SHA-256; the file's signature was checked with cosign (signed by the
+  # Kubernetes release account krel-staging@k8s-releng-prod.iam.gserviceaccount.com).
+  CLUSTER_NAME: cryptobot
+  KUBECTL_VERSION: v1.37.2
+  KUBECTL_SHA256: c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
 
 jobs:
   image:
     name: Test, build, scan, push
-    if: github.event_name == 'push'          # started by hand: deploy only, no build
+    # Only for pushes to dev. Started by hand: deploy only. On main: the image already exists.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # No `environment:` on this job: the AWS role trusts exactly "ref:refs/heads/dev"
@@ -145,10 +157,10 @@ jobs:
   deploy:
     name: Deploy to dev
     needs: image
-    # After a push: only if the image job succeeded. Started by hand: the image job is
-    # skipped, and !cancelled() lets this job run although the job it needs did not.
+    # Only on dev. After a push: only if the image job succeeded. Started by hand: the image
+    # job is skipped, and !cancelled() lets this job run although the job it needs did not.
     if: >-
-      !cancelled() && (needs.image.result == 'success' ||
+      !cancelled() && github.ref == 'refs/heads/dev' && (needs.image.result == 'success' ||
       (github.event_name == 'workflow_dispatch' && needs.image.result == 'skipped'))
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -157,13 +169,7 @@ jobs:
       contents: read
       id-token: write                       # OIDC token for the AWS sign-in
     env:
-      CLUSTER_NAME: cryptobot
-      NAMESPACE: dev
-      # kubectl must be within one minor version of the cluster (EKS 1.37). Pinned with its
-      # SHA-256; the file's signature was checked with cosign (signed by the Kubernetes
-      # release account krel-staging@k8s-releng-prod.iam.gserviceaccount.com).
-      KUBECTL_VERSION: v1.37.2
-      KUBECTL_SHA256: c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
+      NAMESPACE: dev                        # cluster and kubectl pins: workflow env above
     steps:
       - name: Check the inputs
         id: release
@@ -328,6 +334,259 @@ jobs:
             kubectl -n "$NAMESPACE" rollout status "deployment/$deployment" --timeout=5m
           done
           echo "Deployed \`$ECR_REPOSITORY:$SHA\` (\`$DIGEST\`) to \`$NAMESPACE\`." >> "$GITHUB_STEP_SUMMARY"
+
+      # Only names, states and Warning events: image addresses in them contain the account
+      # ID, which GitHub prints as *** (it is a secret).
+      - name: Show what went wrong
+        if: failure() && steps.connect.outcome == 'success'
+        run: |
+          kubectl -n "$NAMESPACE" get pods,jobs,externalsecrets || true
+          kubectl -n "$NAMESPACE" get events --field-selector type=Warning \
+            --sort-by=.metadata.creationTimestamp || true
+
+  deploy-prod:
+    name: Deploy to prod
+    # Only on main: after a merge of dev (push), or started by hand (deploy the newest main
+    # commit, or roll back to an older one). Never builds: it deploys the image dev tested.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # GitHub pauses this job before its first step until a required reviewer of the
+    # environment approves it, and the environment admits only the branch main. Both are
+    # repository settings made by hand (README, "Deploy to prod on EKS") and must exist BEFORE
+    # the first merge: GitHub creates a missing environment WITHOUT any protection. The AWS
+    # role deploy-prod trusts exactly "environment:production" (bootstrap layer,
+    # github_oidc.tf): only a job in this environment can use it.
+    environment: production
+    permissions:
+      contents: read
+      id-token: write                       # OIDC token for the AWS sign-in
+    env:
+      NAMESPACE: prod                       # cluster and kubectl pins: workflow env above
+    steps:
+      - name: Check the inputs
+        id: release
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+          INPUT_SHA: ${{ inputs.image_sha }}  # through env: never pasted into the script
+        run: |
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || {
+            echo "::error::Repository secret AWS_ACCOUNT_ID is missing or not 12 digits (bootstrap README)"
+            exit 1
+          }
+          [[ "$GITHUB_REF" == refs/heads/main ]] || {
+            echo "::error::Only main deploys to prod"
+            exit 1
+          }
+          sha=${INPUT_SHA:-$GITHUB_SHA}       # empty field: the commit this run is for
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::image_sha must be a full commit SHA of main, 40 characters 0-9 a-f (git rev-parse <short SHA>)"
+            exit 1
+          }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Main commit to deploy: $sha"
+
+      # The whole history (small), to check that the commit is on main and to find what it
+      # merged. Also the manifests of that commit: for a rollback, the old commit's.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.release.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Prod runs only what dev has tested: the commit must be a merge into main whose files
+      # are exactly those of the dev commit it merged (second parent). That commit's image was
+      # built, tested and scanned when it was pushed to dev.
+      - name: Find the tested dev commit
+        id: tested
+        env:
+          MAIN_SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          # On main's own line (first parents): its merges and direct commits, not the dev
+          # commits a merge brought in. (grep without -q reads all input: no broken pipe.)
+          if ! git rev-list --first-parent origin/main | grep -x -- "$MAIN_SHA" > /dev/null; then
+            echo "::error::$MAIN_SHA is not a commit on main (start the workflow with a main commit)"
+            exit 1
+          fi
+          dev_sha=$(git rev-parse --verify --quiet "$MAIN_SHA^2") || {
+            echo "::error::$MAIN_SHA is not a merge commit: merge dev into main with a pull request and \"Create a merge commit\" (not squash or rebase)"
+            exit 1
+          }
+          if [[ "$(git rev-parse "$MAIN_SHA^{tree}")" != "$(git rev-parse "$dev_sha^{tree}")" ]]; then
+            echo "::error::main's files differ from the merged dev commit $dev_sha (a change made on main, or in the merge itself): that code was never tested on dev. Bring the change through dev."
+            git diff --stat "$dev_sha" "$MAIN_SHA"
+            exit 1
+          fi
+          echo "dev_sha=$dev_sha" >> "$GITHUB_OUTPUT"
+          echo "main $MAIN_SHA has exactly the files of dev $dev_sha"
+
+      # The same sign-in as in the other jobs (keep them in sync), with the deploy-prod role:
+      # it may look up an image, give it a second tag and reach the cluster; inside Kubernetes
+      # its group may change only the namespace prod (platform layer).
+      - name: Sign in to AWS as cryptobot-github-deploy-prod (OIDC)
+        env:
+          ROLE_ARN: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/cryptobot-github-deploy-prod
+        run: |
+          token=$(curl -sSf --retry 3 --max-time 30 \
+                    -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+                    "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          [[ -n "$token" && "$token" != null ]] || { echo "::error::No OIDC token from GitHub"; exit 1; }
+          echo "::add-mask::$token"
+          creds=$(aws sts assume-role-with-web-identity --role-arn "$ROLE_ARN" \
+                    --role-session-name "cd-prod-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+                    --web-identity-token "$token" \
+                    --query 'Credentials.[AccessKeyId,SecretAccessKey,SessionToken]' --output text)
+          read -r key secret session <<<"$creds"
+          for value in "$key" "$secret" "$session"; do echo "::add-mask::$value"; done
+          {
+            echo "AWS_ACCESS_KEY_ID=$key"
+            echo "AWS_SECRET_ACCESS_KEY=$secret"
+            echo "AWS_SESSION_TOKEN=$session"
+          } >> "$GITHUB_ENV"
+          echo "Signed in."
+
+      # The digest is the image's content address (sha256 of its manifest): deploying by
+      # digest means prod pulls exactly the bytes that were tested, whatever any tag says.
+      - name: Find the tested image in ECR
+        id: image
+        env:
+          DEV_SHA: ${{ steps.tested.outputs.dev_sha }}
+        run: |
+          if digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+                        --image-ids imageTag="$DEV_SHA" \
+                        --query 'imageDetails[0].imageDigest' --output text 2>&1); then
+            echo "digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "Found $ECR_REPOSITORY:$DEV_SHA ($digest)"
+          elif grep -q ImageNotFoundException <<<"$digest"; then
+            echo "::error::No image for the dev commit $DEV_SHA in ECR: wait until its CD run on dev is green, then re-run this job (a failed or cancelled run builds none). For a rollback: ECR keeps only the newest 10 prod images (and the newest 30 overall)"
+            exit 1
+          else
+            echo "$digest" >&2                # any other error (rights, network): stop here
+            exit 1
+          fi
+
+      # A second tag on the same image: marks the main commits released to prod, and ECR keeps
+      # the newest 10 prod-* images however many dev pushes follow (bootstrap layer, ecr.tf).
+      # Tags never move (IMMUTABLE): an existing prod tag must name this very image.
+      - name: Tag it prod-<main SHA>
+        env:
+          MAIN_SHA: ${{ steps.release.outputs.sha }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          tag="prod-$MAIN_SHA"
+          if existing=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+                          --image-ids imageTag="$tag" \
+                          --query 'imageDetails[0].imageDigest' --output text 2>&1); then
+            [[ "$existing" == "$DIGEST" ]] || {
+              echo "::error::$tag already names another image ($existing)"
+              exit 1
+            }
+            echo "$tag already names this image (a re-run or a rollback)."
+          elif grep -q ImageNotFoundException <<<"$existing"; then
+            # The image's manifest byte for byte (through a file): ECR checks it against the
+            # digest, so the new tag can only name the tested image.
+            aws ecr batch-get-image --repository-name "$ECR_REPOSITORY" \
+              --image-ids imageDigest="$DIGEST" \
+              --accepted-media-types \
+                application/vnd.oci.image.index.v1+json \
+                application/vnd.oci.image.manifest.v1+json \
+                application/vnd.docker.distribution.manifest.list.v2+json \
+                application/vnd.docker.distribution.manifest.v2+json \
+              --output json > "$RUNNER_TEMP/image.json"
+            jq -j '.images[0].imageManifest' "$RUNNER_TEMP/image.json" > "$RUNNER_TEMP/manifest.json"
+            media_type=$(jq -r '.images[0].imageManifestMediaType' "$RUNNER_TEMP/image.json")
+            aws ecr put-image --repository-name "$ECR_REPOSITORY" --image-tag "$tag" \
+              --image-manifest "file://$RUNNER_TEMP/manifest.json" \
+              --image-manifest-media-type "$media_type" --image-digest "$DIGEST" > /dev/null
+            echo "Tagged $tag."
+          else
+            echo "$existing" >&2
+            exit 1
+          fi
+
+      - name: Is the cluster running?
+        id: cluster
+        run: |
+          if status=$(aws eks describe-cluster --name "$CLUSTER_NAME" \
+                        --query cluster.status --output text 2>&1); then
+            :                                 # ACTIVE, CREATING, UPDATING, DELETING, FAILED, ...
+          elif grep -q ResourceNotFoundException <<<"$status"; then
+            status=MISSING
+          else
+            echo "$status" >&2
+            exit 1
+          fi
+          if [[ "$status" == ACTIVE || "$status" == UPDATING ]]; then
+            echo "running=true" >> "$GITHUB_OUTPUT"
+            echo "Cluster $CLUSTER_NAME: $status"
+          else
+            echo "running=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Cluster $CLUSTER_NAME is not running ($status): nothing deployed (the image is tagged). Once it is (platform + envs/prod applied), start this workflow by hand: gh workflow run cd.yml --ref main"
+            echo "Not deployed: cluster \`$CLUSTER_NAME\` is not running ($status)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Install kubectl ${{ env.KUBECTL_VERSION }}
+        if: steps.cluster.outputs.running == 'true'
+        run: |
+          curl -sSfL --retry 3 --max-time 120 -o "$RUNNER_TEMP/kubectl" \
+            "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
+          echo "$KUBECTL_SHA256  $RUNNER_TEMP/kubectl" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m 0755 "$RUNNER_TEMP/kubectl" "$RUNNER_TEMP/bin/kubectl"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"   # before the runner's own kubectl
+          "$RUNNER_TEMP/bin/kubectl" version --client
+
+      - name: Connect kubectl to the cluster
+        id: connect
+        if: steps.cluster.outputs.running == 'true'
+        # Its message names the cluster ARN, which contains the account ID: not printed.
+        run: aws eks update-kubeconfig --name "$CLUSTER_NAME" > /dev/null
+
+      # The SecretStore comes from the envs/prod layer (Terraform). Without it there are no
+      # database passwords and no pod could start: fail instead of skipping.
+      - name: Is envs/prod applied?
+        if: steps.cluster.outputs.running == 'true'
+        run: |
+          kubectl -n "$NAMESPACE" wait secretstore/aws-secrets-manager \
+            --for=condition=Ready --timeout=2m || {
+            echo "::error::SecretStore aws-secrets-manager missing or not Ready in namespace $NAMESPACE: apply envs/prod, then start this workflow by hand"
+            exit 1
+          }
+
+      - name: Deploy
+        if: steps.cluster.outputs.running == 'true'
+        env:
+          REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          # As for dev, but the image by digest (the wrapper exists only on this runner).
+          mkdir -p "k8s/deploy/$NAMESPACE"
+          cat > "k8s/deploy/$NAMESPACE/kustomization.yaml" <<EOF
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+            - ../../overlays/$NAMESPACE
+          images:
+            - name: cryptobot-app
+              newName: $REGISTRY/$ECR_REPOSITORY
+              digest: $DIGEST
+          EOF
+          # A Job cannot be changed once created: remove the previous init-db first.
+          kubectl -n "$NAMESPACE" delete job init-db --ignore-not-found
+          kubectl apply -k "k8s/deploy/$NAMESPACE"
+
+      - name: Wait until the new version runs
+        if: steps.cluster.outputs.running == 'true'
+        env:
+          MAIN_SHA: ${{ steps.release.outputs.sha }}
+          DEV_SHA: ${{ steps.tested.outputs.dev_sha }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          kubectl -n "$NAMESPACE" wait job/init-db --for=condition=complete --timeout=6m
+          for deployment in api streamer dashboard; do
+            kubectl -n "$NAMESPACE" rollout status "deployment/$deployment" --timeout=5m
+          done
+          echo "Deployed \`$ECR_REPOSITORY@$DIGEST\` (dev \`$DEV_SHA\`, tag \`prod-$MAIN_SHA\`) to \`$NAMESPACE\`." >> "$GITHUB_STEP_SUMMARY"
 
       # Only names, states and Warning events: image addresses in them contain the account
       # ID, which GitHub prints as *** (it is a secret).
