@@ -22,7 +22,7 @@ work session.
 A job that sets `environment:` gets the subject `…:environment:<name>` instead of the
 branch, so the dev jobs must not use a GitHub environment (or the trust must change).
 
-The workflows (`.github/workflows/cd.yml` uses `build` and `deploy-dev`) build each role's
+The workflows (`.github/workflows/cd.yml` uses `build`, `deploy-dev` and `deploy-prod`) build each role's
 ARN from the repository secret `AWS_ACCOUNT_ID` (GitHub: Settings → Secrets and variables →
 Actions), so the account ID is in no file and GitHub hides it in the public logs. Set it once, with
 `AWS_PROFILE` set as in Prerequisites (check first that `aws sts get-caller-identity` shows the
@@ -75,8 +75,15 @@ The `deploy-prod` role trusts every job that runs in the GitHub environment `pro
 so the environment itself must be protected (repository Settings → Environments →
 `production`):
 
-- **Required reviewers:** the repository owner (every prod deploy waits for approval).
+- **Required reviewers:** the repository owner (every prod deploy waits for approval), with
+  "Prevent self-review" off (a solo owner approves their own merges).
 - **Deployment branches and tags:** selected branches only, `main`.
+
+Create it **before the first merge into `main`**: a workflow that names an environment that
+does not exist makes GitHub create it without any protection, and the role would accept that
+job. The name must be exactly `production` (the trust compares it case-sensitively). The
+repository must allow merge commits (prod deploys only merge commits), and `main` must not
+require a linear history.
 
 `terraform output ci_role_arns` prints the role ARNs the CD workflow assumes.
 

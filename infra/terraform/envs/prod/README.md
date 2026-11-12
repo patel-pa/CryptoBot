@@ -58,12 +58,11 @@ terraform apply tfplan                         # ~15-25 min (a restore is slower
 # ONLY the very first time (no final snapshot exists yet; the plan stops with
 # "Your query returned no results" otherwise): terraform plan -var first_create=true -out=tfplan
 
-# deploy the app ... work ...
+# deploy the app (README in the repository root: "Deploy to prod on EKS") ... work ...
 
-# remove the app FIRST, from the repository root (once the prod overlay and prod CD exist:
-# merge nothing to main and start no CD run on main until this layer is destroyed, else CD
-# deploys it again): kubectl delete -k k8s/overlays/prod --ignore-not-found, then wait until
-# no load balancer is left
+# remove the app FIRST (merge nothing to main and start no CD run on main until this layer is
+# destroyed, else CD deploys it again); from the repository root:
+# kubectl delete -k k8s/overlays/prod --ignore-not-found, then wait until no load balancer is left
 
 # teardown step 1: protection off, final snapshot names set (see final_on_destroy in the plan)
 terraform plan -var deletion_protection=false -out=tfplan

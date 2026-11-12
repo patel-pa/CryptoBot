@@ -5,9 +5,9 @@
 #   approval in the GitHub environment "production", the SAME image that was tested on dev
 #   goes to the namespace prod (job "deploy-prod"). Nothing is built on main.
 # - By hand (`gh workflow run cd.yml --ref dev` or `--ref main`, optionally
-#   `-f image_sha=<full SHA>`; the "Run workflow" button appears only once this file is on
-#   the default branch): only that branch's deploy job, for an image already in ECR. No SHA =
-#   the branch's newest commit (e.g. after the cluster was created); an older commit SHA =
+#   `-f image_sha=<full SHA>`, or the "Run workflow" button in the Actions tab): only that
+#   branch's deploy job, for an image already in ECR. No SHA = the branch's newest commit
+#   (e.g. after the cluster was created); an older commit SHA =
 #   rollback. Nothing is rebuilt or scanned again, so a vulnerability published since then
 #   cannot block a rollback.
 # The cluster exists only during work sessions: without it the deploy jobs skip (green).

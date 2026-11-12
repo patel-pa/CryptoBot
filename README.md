@@ -6,7 +6,7 @@ An end-to-end data engineering platform that ingests Binance BTC/USDT market dat
 
 ## v2 in progress
 
-The AWS/EKS deployment is being built on the `dev` branch. The finished Data Engineering version is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
+Version 2 moves the platform to AWS: Amazon EKS, Amazon RDS for PostgreSQL and Amazon DocumentDB, all infrastructure built by Terraform, delivery by GitHub Actions. The dev path (push to `dev` → tests → vulnerability scan → deploy to EKS) has run end to end on AWS; the prod path (merge into `main` → approval → the same image, by digest) is written and its first rehearsal is pending. The AWS environments exist only during work sessions: Terraform creates and destroys them to keep the cost low. Monitoring, alerting and the disaster-recovery documentation are still to come. The finished Data Engineering version (v1) is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
 
 ---
 
@@ -40,8 +40,8 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 **Serving:** FastAPI + Uvicorn
 **Dashboard:** Streamlit + Plotly
 **ML:** scikit-learn, pandas, joblib
-**Scheduling:** two commands, `python -m src.cli ingest` and `retrain`, run as Kubernetes CronJobs in v2 (in progress); v1.0 used Apache Airflow
-**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS (in progress), GitHub Actions (CI: flake8 + pytest + image build; CD: tests, Trivy scan, push to Amazon ECR via OIDC, deploy to the dev namespace on EKS; manual deploy or rollback by SHA)
+**Scheduling:** two commands, `python -m src.cli ingest` and `retrain`, run as Kubernetes CronJobs in v2 (run on EKS dev); v1.0 used Apache Airflow
+**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS, GitHub Actions (CI: flake8 + pytest + image build; CD: tests, Trivy scan, push to Amazon ECR via OIDC, deploy to the dev namespace on EKS; merges into `main` go to the prod namespace after approval, with the same image by digest (first rehearsal pending); manual deploy or rollback by SHA)
 **Testing:** pytest
 
 ---
@@ -51,11 +51,11 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 - **Idempotent ingestion** — the batch pipeline uses `ON CONFLICT (symbol, open_time) DO NOTHING`; the stream pipeline uses a unique index on `(symbol, kline_start_time)` + upsert. Re-runs and overlapping ranges never create duplicates.
 - **Incremental / resumable loading** — before fetching, the collector reads `MAX(close_time)` from PostgreSQL and resumes 1 ms after the last stored candle, so the same script serves both the initial backfill and scheduled top-ups.
 - **Pagination** — handles Binance's 1,000-candle-per-request limit by advancing `startTime` until a partial page signals the present has been reached.
-- **Scheduled jobs** — two commands keep the system current: `python -m src.cli ingest` re-runs the idempotent collector, and `python -m src.cli retrain` catches the data up and retrains the model. On Kubernetes they will run as CronJobs, every 15 minutes and daily (v2, in progress); in docker compose, `historical` runs `ingest` on every `up` and `retrain` is run by hand. The API picks up a newer model by itself (S3 on AWS, a local file in docker compose), no restart needed. Each command's exit code tells the scheduler whether it failed.
+- **Scheduled jobs** — two commands keep the system current: `python -m src.cli ingest` re-runs the idempotent collector, and `python -m src.cli retrain` catches the data up and retrains the model. On Kubernetes they run as CronJobs, every 15 minutes and daily (proven on EKS dev); in docker compose, `historical` runs `ingest` on every `up` and `retrain` is run by hand. The API picks up a newer model by itself (S3 on AWS, a local file in docker compose), no restart needed. Each command's exit code tells the scheduler whether it failed.
 - **Verified data quality** — **~240,000+** one-minute BTC/USDT candles loaded with **0 gaps** (and growing with every ingest run), confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
 - **Predicted-vs-actual tracking** — every `/predict` call is persisted, so `/predictions` can join each forecast against the candle's real close for later evaluation.
 - **CI on every push** — GitHub Actions runs flake8 (fails on syntax/undefined-name errors), the pytest suite, and a Docker image build.
-- **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA, then deployed to the `dev` namespace on EKS (skipped while no cluster runs); started by hand, it deploys or rolls back to any image already in ECR without rebuilding. GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
+- **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA, then deployed to the `dev` namespace on EKS (skipped while no cluster runs); started by hand, it deploys or rolls back to any image already in ECR without rebuilding. A merge into `main` waits for approval, checks that `main` holds exactly the tested dev commit's files, and deploys that commit's image by digest to the `prod` namespace (written; first rehearsal pending). GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
 
 ---
 
@@ -160,7 +160,7 @@ Every push to `dev` runs `.github/workflows/cd.yml`: after the image job (tests,
 Started by hand, the workflow only deploys: no build, no new scan. The image must already be in ECR, i.e. that commit's CD run passed (ECR keeps the newest 30 images). Start it only when no CD run is waiting: GitHub keeps one waiting run per branch and cancels an older one.
 
 ```bash
-gh run list --workflow cd.yml --limit 3                    # nothing "queued" or "in_progress"?
+gh run list --workflow cd.yml --limit 3                    # every line ✓, X or - (none with *)?
 gh workflow run cd.yml --ref dev                           # deploys the newest commit on dev, e.g. after a session's applies
 gh run list --workflow cd.yml --limit 1                    # its run ID; follow it with: gh run watch <run ID>
 
@@ -169,7 +169,7 @@ aws ecr describe-images --region eu-central-1 --repository-name cryptobot --quer
 gh workflow run cd.yml --ref dev -f image_sha=<full SHA from that list>
 ```
 
-The "Run workflow" button in GitHub's Actions tab appears only once `cd.yml` is on the default branch (`main`); until then, use `gh workflow run`.
+Or use the "Run workflow" button in GitHub's Actions tab (it needs `cd.yml` on the default branch `main`): pick the branch; `image_sha` is optional.
 
 A **rollback** deploys the old commit as a whole: its manifests together with its image, the pair that was tested together. Objects that only newer commits have (e.g. a new CronJob) stay, because `kubectl apply` deletes nothing. It does not run the tests or Trivy again, so a vulnerability published since then cannot block it.
 
@@ -218,13 +218,63 @@ Until the first `retrain` has uploaded a model, `POST /predict` answers 503 and 
 **Before destroying the infrastructure, remove the app.** Its Ingress owns an ALB that Terraform did not create; it keeps costing money and blocks deleting the VPC. First make sure no CD run can deploy it again: no push to `dev` from now until `envs/dev` is destroyed, and no CD run waiting or running.
 
 ```bash
-gh run list --workflow cd.yml --limit 3                       # nothing "queued" or "in_progress"
+gh run list --workflow cd.yml --limit 3                       # every line ✓, X or - (none with *)
 kubectl delete -k k8s/overlays/dev --ignore-not-found         # the Load Balancer Controller deletes the ALB
 aws elbv2 describe-load-balancers --region eu-central-1 \
   --query "LoadBalancers[].LoadBalancerName"                  # repeat until []
 ```
 
-Then destroy `envs/dev`, then `platform` (their READMEs).
+Then destroy `envs/dev`, and `platform` once `envs/dev` and `envs/prod` (whichever ran) are destroyed (their READMEs).
+
+## Deploy to prod on EKS
+
+The same app in the `prod` namespace of the same cluster: `k8s/overlays/prod` is the dev overlay with prod's values (secrets `cryptobot/prod/*`, model `prod/model.pkl`, its own ALB `cryptobot-prod`, two API pods, the history since 1 Oct 2026). Needs the Terraform layers `platform` and then `envs/prod` applied (its README: the very first create, the restore from the newest final snapshot, the teardown in two steps). Prod is deployed only from `main`, after your approval, with the image that was built, tested and scanned on `dev`: nothing is built for prod.
+
+### Once, before the first merge: the GitHub environment `production`
+
+A workflow that names an environment that does not exist yet makes GitHub create it **without any protection**, so set it up first (repository Settings → Environments → New environment → `production`):
+
+- **Required reviewers:** you. Leave "Prevent self-review" off: you approve your own merges.
+- **Deployment branches and tags:** "Selected branches and tags" → add the branch `main`. This is the lock that matters: the AWS role `cryptobot-github-deploy-prod` trusts every job in this environment (bootstrap README).
+- Recommended (Settings → Rules → Rulesets, target `main`): require a pull request, block force pushes and deletion.
+
+### With CD (the normal way)
+
+1. Open a pull request from `dev` to `main`, wait until the CD run of that dev commit is green (the pull request shows it as a check: only then is its image in ECR), and merge it with **"Create a merge commit"** (not squash, not rebase): the merge's second parent is the tested dev commit, which is how the job finds its image.
+2. The push to `main` starts `cd.yml`; its job "Deploy to prod" waits for you: Actions → that run → **Review deployments** → `production` → **Approve and deploy**.
+3. The job then checks that the commit is a merge on `main` whose files are exactly those of the merged dev commit (a change made directly on `main`, or inside the merge, was never tested: the job stops), finds that dev commit's image in ECR, gives it the second tag `prod-<main SHA>` (ECR keeps the newest 10 of those whatever dev does), and deploys it to `prod` **by digest**. Without a running cluster it tags the image and skips the deploy (green); a cluster without `envs/prod` makes it fail.
+
+```bash
+gh pr create --base main --head dev --title "Release: <what changed>" --body "<summary>"
+gh pr merge <PR number> --merge                              # a merge commit, never --squash or --rebase
+gh run list --workflow cd.yml --branch main --limit 1        # then approve it in the Actions tab
+
+# After a session's applies, deploy the newest main commit (again with approval):
+gh workflow run cd.yml --ref main
+
+# Rollback: an older merge on main, deployed with its own manifests and image (again with approval)
+git fetch origin && git log --first-parent --merges --format="%H %cs %s" origin/main -5
+gh workflow run cd.yml --ref main -f image_sha=<full SHA of an older merge from that list>
+```
+
+After the very first deploy (prod starts empty; after a restore the model and the history are already there):
+
+```bash
+aws eks update-kubeconfig --name cryptobot --region eu-central-1   # kubectl to the EKS cluster (not kind)
+kubectl -n prod create job --from=cronjob/retrain retrain-now      # loads the history since 1 Oct 2026, trains, uploads prod/model.pkl
+kubectl -n prod get ingress dashboard -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'   # open http://<that name>
+```
+
+**Before destroying prod, remove the app**, as for dev: no merge to `main` and no CD run on `main` until `envs/prod` is destroyed.
+
+```bash
+gh run list --workflow cd.yml --branch main --limit 3         # every line ✓, X or - (none with *: also waiting for approval)
+kubectl delete -k k8s/overlays/prod --ignore-not-found        # the Load Balancer Controller deletes the ALB
+aws elbv2 describe-load-balancers --region eu-central-1 \
+  --query "LoadBalancers[].LoadBalancerName"                  # repeat until no cryptobot-prod
+```
+
+Then destroy `envs/prod` in its two steps (its README). Its **final snapshots stay on purpose** (a few cents per month): the next create restores them. Then `platform`, once `envs/dev` and `envs/prod` (whichever ran) are destroyed.
 
 ---
 
