@@ -33,12 +33,16 @@ class FakeBackend:
         self.requests = []          # keyword arguments of each Binance request
         self.saved = []             # DataFrames given to save_to_postgres()
         self.pauses = 0
-        self.db_waits = 0
+        self.db_calls = []          # the Postgres steps, in order
 
     def wait_for_postgres(self):
-        self.db_waits += 1
+        self.db_calls.append("wait")
+
+    def create_schema(self):
+        self.db_calls.append("create schema")
 
     def get_last_close_ms(self, symbol):
+        self.db_calls.append("read last candle")
         return self.last_close_ms
 
     def get_binance_data(self, **kwargs):
@@ -53,6 +57,7 @@ class FakeBackend:
 def backend(monkeypatch):
     b = FakeBackend()
     monkeypatch.setattr(fh, "wait_for_postgres", b.wait_for_postgres)
+    monkeypatch.setattr(fh, "create_schema", b.create_schema)
     monkeypatch.setattr(fh, "get_last_close_ms", b.get_last_close_ms)
     monkeypatch.setattr(fh, "get_binance_data", b.get_binance_data)
     monkeypatch.setattr(fh, "save_to_postgres", b.saved.append)
@@ -60,6 +65,13 @@ def backend(monkeypatch):
     for key in ("HISTORICAL_LOOKBACK_DAYS", "HISTORICAL_START_DATE"):
         monkeypatch.delenv(key, raising=False)         # a local .env must not leak in
     return b
+
+
+def test_creates_the_table_before_reading_it(backend):
+    """The ingest/retrain jobs can start before the init-db Job has created the
+    table (Kubernetes starts them in any order), so the backfill creates it itself."""
+    fh.backfill(now_ms=NOW)
+    assert backend.db_calls == ["wait", "create schema", "read last candle"]
 
 
 def test_resumes_one_ms_after_the_last_stored_candle(backend):
@@ -99,7 +111,7 @@ def test_bad_settings_fail_before_waiting_for_the_database(backend, monkeypatch,
         monkeypatch.setenv(key, value)
     with pytest.raises(ConfigError, match=message):
         fh.backfill(now_ms=NOW)
-    assert backend.db_waits == 0                       # failed at once
+    assert backend.db_calls == []                      # failed at once
     assert backend.requests == []
 
 

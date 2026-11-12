@@ -4,7 +4,7 @@ import requests
 
 from src.config import historical_lookback_days, historical_start_date
 from src.params.constants import BINANCE_KLINES_URL, DEFAULT_REST_INTERVAL, SUPPORTED_SYMBOLS
-from src.storage.postgres import wait_for_postgres
+from src.storage.postgres import create_schema, wait_for_postgres
 from src.storage.postgres_writer import get_last_close_ms, save_to_postgres
 from src.utils.dataframe_utils import raw_to_dataframe
 from src.utils.retry import retry
@@ -63,6 +63,7 @@ def backfill(symbol=SYMBOL, now_ms=None):
     start_date = historical_start_date()
 
     wait_for_postgres()                     # pods start in any order on Kubernetes
+    create_schema()                         # the table may not exist yet (init-db still running)
 
     end_time = now_ms if now_ms is not None else time_ns() // 1_000_000
 
