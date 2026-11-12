@@ -1,0 +1,105 @@
+# CD, part 1: every push to dev tests the code, builds the app image, scans it and stores
+# it in Amazon ECR under the full commit SHA. Deploying it to EKS is a later step; this
+# workflow needs no running cluster, so it works between work sessions too.
+
+name: CD
+
+on:
+  push:
+    branches: [dev]
+
+# One run at a time per branch: a newer push waits for the running one instead of racing it.
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REPOSITORY: cryptobot
+  # Trivy as a container image pinned by digest; its signature was checked with cosign
+  # (signed by Aqua's reusable-release.yaml at tag v0.76.2). Not the trivy-action: its
+  # version tags were hijacked in March 2026.
+  TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+
+jobs:
+  image:
+    name: Test, build, scan, push
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # No `environment:` on this job: the AWS role trusts exactly "ref:refs/heads/dev"
+    # (bootstrap layer, github_oidc.tf), and an environment would change the token's subject.
+    permissions:
+      contents: read
+      id-token: write                       # ask GitHub for an OIDC token: no AWS keys stored
+    steps:
+      # Fail in seconds, with a clear message, instead of after the tests at the sign-in.
+      - name: Check the repository secret AWS_ACCOUNT_ID
+        env:
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          [[ "$AWS_ACCOUNT_ID" =~ ^[0-9]{12}$ ]] || {
+            echo "::error::Repository secret AWS_ACCOUNT_ID is missing or not 12 digits (bootstrap README)"
+            exit 1
+          }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false        # later steps need no Git access
+
+      - name: Lint and test (the image's test stage)
+        run: |
+          docker build --target test -t cryptobot-test .
+          docker run --rm cryptobot-test
+
+      - name: Build the runtime image
+        run: docker build --target runtime -t "cryptobot-app:$GITHUB_SHA" .
+
+      # Before the AWS sign-in, so no AWS credentials exist while a third-party tool runs.
+      # Trivy reads a saved copy of the image: it gets no Docker socket (that would mean
+      # root on the runner and write access to the image that is pushed next).
+      - name: Scan it with Trivy (fails on any CRITICAL vulnerability)
+        run: |
+          docker save "cryptobot-app:$GITHUB_SHA" -o "$RUNNER_TEMP/image.tar"
+          docker run --rm -v "$RUNNER_TEMP/image.tar:/image.tar:ro" "$TRIVY_IMAGE" \
+            image --input /image.tar --scanners vuln --severity CRITICAL --exit-code 1 \
+            --no-progress --disable-telemetry --skip-version-check
+          rm "$RUNNER_TEMP/image.tar"
+
+      - name: Sign in to AWS as cryptobot-github-build
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          # The account ID is a repository secret: Actions logs of a public repository are
+          # public, and GitHub replaces every secret value in them with ***.
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/cryptobot-github-build
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: true
+
+      # ECR tags are immutable: a re-run of the same commit must not try to push again.
+      - name: Is this commit's image already in ECR?
+        id: ecr
+        run: |
+          if out=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+                     --image-ids imageTag="$GITHUB_SHA" 2>&1); then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "The image of $GITHUB_SHA is already in ECR: nothing to push."
+          elif grep -q ImageNotFoundException <<<"$out"; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$out" >&2                 # any other error (rights, network): stop here
+            exit 1
+          fi
+
+      - name: Push it to ECR
+        if: steps.ecr.outputs.exists == 'false'
+        env:
+          REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+        run: |
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+          docker tag "cryptobot-app:$GITHUB_SHA" "$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          docker push "$REGISTRY/$ECR_REPOSITORY:$GITHUB_SHA"
+          digest=$(aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+                     --image-ids imageTag="$GITHUB_SHA" --query 'imageDetails[0].imageDigest' --output text)
+          echo "Pushed \`$ECR_REPOSITORY:$GITHUB_SHA\` (\`$digest\`)" >> "$GITHUB_STEP_SUMMARY"

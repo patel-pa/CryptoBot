@@ -41,7 +41,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 **Dashboard:** Streamlit + Plotly
 **ML:** scikit-learn, pandas, joblib
 **Scheduling:** two commands, `python -m src.cli ingest` and `retrain`, run as Kubernetes CronJobs in v2 (in progress); v1.0 used Apache Airflow
-**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS (in progress), GitHub Actions (flake8 + pytest + image build)
+**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS (in progress), GitHub Actions (CI: flake8 + pytest + image build; CD: tests, Trivy scan, push to Amazon ECR via OIDC)
 **Testing:** pytest
 
 ---
@@ -55,6 +55,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 - **Verified data quality** — **~240,000+** one-minute BTC/USDT candles loaded with **0 gaps** (and growing with every ingest run), confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
 - **Predicted-vs-actual tracking** — every `/predict` call is persisted, so `/predictions` can join each forecast against the candle's real close for later evaluation.
 - **CI on every push** — GitHub Actions runs flake8 (fails on syntax/undefined-name errors), the pytest suite, and a Docker image build.
+- **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA; GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
 
 ---
 
@@ -75,7 +76,7 @@ k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (
 infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/ and envs/dev/ (destroyed after every session); envs/prod/ follows
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
-.github/workflows/  # CI pipeline (python-app.yml)
+.github/workflows/  # CI (python-app.yml); CD (cd.yml): every push to dev → tests, image, Trivy scan, push to ECR
 docker-compose.yml  # full stack: postgres, mongo, init, historical, streamer, api, dashboard
 ```
 
@@ -150,7 +151,7 @@ The `ingest` (every 15 min) and `retrain` (daily) CronJobs also run on their own
 
 ## Deploy to dev on EKS (by hand, until CD)
 
-The same manifests in the `dev` namespace of the EKS cluster: `k8s/overlays/dev` adds the database connection details from AWS Secrets Manager (External Secrets), TLS to RDS and DocumentDB, the model in S3, and the dashboard behind an ALB. Needs the Terraform layers `platform` and then `envs/dev` applied (see their READMEs; pods get their AWS rights only if `envs/dev` exists when they start), the app image in ECR (tagged with its git commit SHA), and kubectl within one minor version of the cluster (1.36–1.38).
+The same manifests in the `dev` namespace of the EKS cluster: `k8s/overlays/dev` adds the database connection details from AWS Secrets Manager (External Secrets), TLS to RDS and DocumentDB, the model in S3, and the dashboard behind an ALB. Needs the Terraform layers `platform` and then `envs/dev` applied (see their READMEs; pods get their AWS rights only if `envs/dev` exists when they start), the app image in ECR (the CD workflow pushes it after a successful run on `dev`, tagged with the full commit SHA), and kubectl within one minor version of the cluster (1.36–1.38).
 
 ```bash
 aws eks update-kubeconfig --name cryptobot --region eu-central-1   # = terraform output -raw kubeconfig_command
@@ -158,7 +159,9 @@ aws eks update-kubeconfig --name cryptobot --region eu-central-1   # = terraform
 # The image address contains the AWS account ID, so it goes into a file Git ignores (k8s/deploy/):
 REGISTRY=$(aws ecr describe-repositories --region eu-central-1 --repository-names cryptobot \
   --query "repositories[0].repositoryUri" --output text)
-TAG=<git commit SHA of an image in ECR>
+TAG=$(git rev-parse origin/dev)          # the newest pushed commit; its CD run must be green:
+aws ecr describe-images --region eu-central-1 --repository-name cryptobot \
+  --image-ids imageTag="$TAG" --query "imageDetails[0].imagePushedAt"   # an error = no image yet
 mkdir -p k8s/deploy/dev
 cat > k8s/deploy/dev/kustomization.yaml <<EOF
 apiVersion: kustomize.config.k8s.io/v1beta1
