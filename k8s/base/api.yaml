@@ -17,7 +17,7 @@ spec:
       labels:
         app.kubernetes.io/name: api
     spec:
-      serviceAccountName: api                # reads the model from S3 (Pod Identity, Week 2)
+      serviceAccountName: api                # reads the model from S3 (EKS Pod Identity)
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001                     # the image's `app` user

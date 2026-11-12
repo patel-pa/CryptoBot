@@ -42,7 +42,9 @@ The databases read their passwords back from exactly the secret versions just wr
 fails half-way. External Secrets merges both secrets of a database into one Kubernetes Secret.
 
 **New passwords:** raise `password_version` in `secrets.tf` and apply. The secrets get new values
-first, then the databases read them back. Running pods keep the old password until they restart.
+first, then the databases read them back. Running pods keep the old password until they restart,
+and External Secrets copies the new one into Kubernetes only at its next hourly refresh: force
+that first, then restart the pods (commands in `k8s/overlays/dev/external-secrets.yaml`).
 If AWS rejects the database change (for example because the instance is busy), the secret
 already holds the new password while the database keeps the old one, and Terraform cannot see
 the difference (AWS never reports a password): raise `password_version` once more.
@@ -118,7 +120,9 @@ cd infra/terraform/envs/dev
 terraform init
 terraform plan -out=tfplan                     # have it reviewed before applying
 terraform apply tfplan                         # ~10-15 min (DocumentDB is the slow part)
-# ... work ...
+# deploy the app (README in the repository root: "Deploy to dev on EKS") ... work ...
+# remove the app FIRST: from the repository root, kubectl delete -k k8s/overlays/dev --ignore-not-found
+# (deletes the dashboard's ALB), then wait until no load balancer is left
 terraform plan -destroy -out=destroy.tfplan    # have it reviewed before destroying
 terraform apply destroy.tfplan
 # then destroy the platform layer

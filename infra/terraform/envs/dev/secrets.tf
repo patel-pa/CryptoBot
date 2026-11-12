@@ -12,7 +12,8 @@ locals {
   databases = toset(["postgres", "mongo"])
 
   # Bump to give both databases new passwords: the secrets get new values first, then the
-  # databases read them back. Running pods keep the old password until they restart. If
+  # databases read them back. Running pods keep the old password until External Secrets
+  # has copied the new one and they restart (README, "New passwords"). If
   # AWS rejects the database change (e.g. the instance is busy), the secret already holds
   # the new password and Terraform cannot see the difference: bump the number again.
   password_version = 1

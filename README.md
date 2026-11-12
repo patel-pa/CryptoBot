@@ -71,7 +71,7 @@ src/
 ├── visualization/  # app.py (Streamlit dashboard: historical + live + predictions)
 ├── params/         # constants, enums
 └── utils/          # time / url / dataframe helpers
-k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (kind); dev, prod follow
+k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (kind), overlays/dev (EKS); prod follows
 infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/ and envs/dev/ (destroyed after every session); envs/prod/ follows
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
@@ -145,6 +145,52 @@ The `ingest` (every 15 min) and `retrain` (daily) CronJobs also run on their own
 
 - **Set the passwords before the first apply.** Postgres and MongoDB take them only when their data disk is empty; to change them later, `kind delete cluster --name cryptobot` and start again.
 - **Applying again within 10 minutes** (while the finished `init-db` Job still exists) fails with `field is immutable` if anything it uses changed. Delete it first: `kubectl -n cryptobot delete job init-db --ignore-not-found`.
+
+---
+
+## Deploy to dev on EKS (by hand, until CD)
+
+The same manifests in the `dev` namespace of the EKS cluster: `k8s/overlays/dev` adds the database connection details from AWS Secrets Manager (External Secrets), TLS to RDS and DocumentDB, the model in S3, and the dashboard behind an ALB. Needs the Terraform layers `platform` and then `envs/dev` applied (see their READMEs; pods get their AWS rights only if `envs/dev` exists when they start), the app image in ECR (tagged with its git commit SHA), and kubectl within one minor version of the cluster (1.36–1.38).
+
+```bash
+aws eks update-kubeconfig --name cryptobot --region eu-central-1   # = terraform output -raw kubeconfig_command
+
+# The image address contains the AWS account ID, so it goes into a file Git ignores (k8s/deploy/):
+REGISTRY=$(aws ecr describe-repositories --region eu-central-1 --repository-names cryptobot \
+  --query "repositories[0].repositoryUri" --output text)
+TAG=<git commit SHA of an image in ECR>
+mkdir -p k8s/deploy/dev
+cat > k8s/deploy/dev/kustomization.yaml <<EOF
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../overlays/dev
+images:
+  - name: cryptobot-app
+    newName: ${REGISTRY}
+    newTag: ${TAG}
+EOF
+
+kubectl -n dev delete job init-db --ignore-not-found          # a finished Job can only be replaced
+kubectl apply -k k8s/deploy/dev
+kubectl -n dev get externalsecrets                            # STATUS SecretSynced, READY True
+kubectl -n dev get pods                                       # wait until Running / Completed
+kubectl -n dev create job --from=cronjob/retrain retrain-now  # loads the last day, trains, uploads the model
+kubectl -n dev get ingress dashboard \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'    # open http://<that name> (DNS: 1-3 min)
+```
+
+Until the first `retrain` has uploaded a model, `POST /predict` answers 503 and the API logs `AccessDenied` for `dev/model.pkl` (S3 says so for a missing file when the role may not list the bucket).
+
+**Before destroying the infrastructure, remove the app.** Its Ingress owns an ALB that Terraform did not create; it keeps costing money and blocks deleting the VPC:
+
+```bash
+kubectl delete -k k8s/overlays/dev --ignore-not-found         # the Load Balancer Controller deletes the ALB
+aws elbv2 describe-load-balancers --region eu-central-1 \
+  --query "LoadBalancers[].LoadBalancerName"                  # repeat until []
+```
+
+Then destroy `envs/dev`, then `platform` (their READMEs).
 
 ---
 

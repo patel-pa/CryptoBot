@@ -102,6 +102,9 @@ cryptobot_timeline*
 # Local Kubernetes (kind) passwords: real values, never committed (see *.env.example)
 k8s/overlays/local/*.env
 
+# Written at deploy time: names the image in ECR, whose address contains the AWS account ID
+/k8s/deploy/
+
 # Trained models are build output, not source: S3 on AWS, a local file otherwise.
 models/*.pkl
 

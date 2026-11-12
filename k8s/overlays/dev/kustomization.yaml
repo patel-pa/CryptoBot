@@ -1,0 +1,34 @@
+# EKS, namespace `dev`: the base plus what only AWS has. Database connection details
+# from AWS Secrets Manager (External Secrets), TLS to RDS and DocumentDB, the model in
+# S3, and the dashboard on the internet through an ALB. The namespace, the SecretStore
+# and the pods' AWS rights come from Terraform (platform, envs/dev); apply both first.
+# Steps: see "Deploy to dev on EKS" in the README.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: dev
+
+resources:
+  - ../../base
+  - external-secrets.yaml
+  - ingress.yaml
+
+# No `images:` here on purpose: the ECR address contains the AWS account ID, which stays
+# out of the repository. The deploy sets it (k8s/deploy/dev, not committed).
+
+configMapGenerator:
+  - name: cryptobot-config
+    behavior: merge
+    literals:
+      # Both databases only accept encrypted connections. verify-full also checks the
+      # server's certificate and host name, against the AWS CA bundle built into the image.
+      - POSTGRES_SSLMODE=verify-full
+      - POSTGRES_SSLROOTCERT=/etc/ssl/aws/global-bundle.pem
+      - MONGO_TLS=true
+      - MONGO_TLS_CA_FILE=/etc/ssl/aws/global-bundle.pem
+      # Model file: one prefix per environment; the api role may read and the retrain role
+      # may write only dev/* (envs/dev, output model_s3).
+      - MODEL_S3_BUCKET=cryptobot-models-patel-pa
+      - MODEL_S3_KEY=dev/model.pkl
+      - AWS_REGION=eu-central-1             # boto3 has no default region
+      - HISTORICAL_LOOKBACK_DAYS=1          # dev starts empty: reload only the last day
