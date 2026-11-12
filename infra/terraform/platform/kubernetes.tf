@@ -9,10 +9,13 @@ resource "kubernetes_namespace_v1" "env" {
     }
   }
 
-  # On destroy the namespaces go first, while the controllers still run: the Load
-  # Balancer Controller removes the ALB of a forgotten Ingress, and External Secrets
-  # removes the finalizer it puts on every ExternalSecret. Otherwise a namespace could
-  # hang in "Terminating" and stop the destroy before the costly parts are deleted.
+  # A safety net for the destroy (the teardown steps still delete every Ingress first):
+  # these namespaces go first, while the controllers still run. The Load Balancer
+  # Controller removes the ALB of an Ingress forgotten in them (it can: it depends on the
+  # network, controllers.tf: NAT gateway and routes are deleted only after it), and
+  # External Secrets removes the finalizer it puts on every ExternalSecret. Otherwise a
+  # namespace could hang in "Terminating" and stop the destroy with the cluster, the
+  # nodes and the ALB still running.
   depends_on = [module.eks, helm_release.aws_lb_controller, helm_release.external_secrets]
 }
 

@@ -77,7 +77,8 @@ cd infra/terraform/platform
 terraform init
 terraform plan -out=tfplan                     # have it reviewed before applying
 terraform apply tfplan
-# then apply envs/dev (its README) ... work ... destroy envs/dev FIRST, then:
+# then apply envs/dev (its README) and deploy the app ... work ...
+# remove the app (its ALB, see Teardown below), destroy envs/dev, then:
 terraform plan -destroy -out=destroy.tfplan    # have it reviewed before destroying
 terraform apply destroy.tfplan
 ```
@@ -89,18 +90,25 @@ cluster already gone and the databases still running.
 
 ## Teardown: what Terraform did not create
 
-First destroy `envs/dev` (and later `envs/prod`) with their own plan and apply (see above).
-
 The AWS Load Balancer Controller creates an **ALB** (and its security groups) for every
-Ingress, outside Terraform. Remove it before destroying this layer, or it keeps running and
-blocks deleting the VPC:
+Ingress, outside Terraform. Remove them **first**, before any destroy, or they keep running and
+block deleting the VPC. Normally by removing the app (from the repository root:
+`kubectl delete -k k8s/overlays/dev --ignore-not-found`, see the README there); this catches
+any Ingress left anywhere:
 
 ```bash
 kubectl delete ingress --all -A              # the controller deletes the ALBs
-aws elbv2 describe-load-balancers --query "LoadBalancers[].LoadBalancerName"   # until empty
+aws elbv2 describe-load-balancers --region eu-central-1 \
+  --query "LoadBalancers[].LoadBalancerName"   # until empty
 ```
 
-Then plan and apply the destroy (above). The container log groups belong to the bootstrap
+A safety net, not a replacement for that step: the destroy deletes the `dev` and `prod`
+namespaces first, and the controller is removed only after them and before the NAT gateway and
+routes, so it can still delete the ALB of an Ingress forgotten in them (not in any other
+namespace). Check afterwards that no ALB is left.
+
+Then destroy `envs/dev` (and later `envs/prod`) with their own plan and apply, and then this
+layer (see above). The container log groups belong to the bootstrap
 layer and stay (7 days). No PersistentVolumeClaims, so no EBS volumes are left behind.
 
 ## Pod budget

@@ -71,7 +71,10 @@ resource "helm_release" "aws_lb_controller" {
 
   values = [yamlencode(local.lb_controller_values)]
 
-  depends_on = [module.eks, module.aws_lb_controller_pod_identity]
+  # The network too, so that on destroy the controller is removed BEFORE the NAT gateway
+  # and the routes: while the namespaces are deleted (kubernetes.tf) it must still reach
+  # the AWS API to remove the ALB of a forgotten Ingress.
+  depends_on = [module.eks, module.aws_lb_controller_pod_identity, module.vpc, aws_vpc_endpoint.s3]
 }
 
 # --- External Secrets: copies each environment's database passwords from Secrets
