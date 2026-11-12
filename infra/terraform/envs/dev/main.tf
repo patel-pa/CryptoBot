@@ -26,6 +26,7 @@ module "environment" {
   }
 
   deletion_protection = false
+  keep_data           = false # every create starts empty
 
   # Raise by one to give both dev databases new passwords (module README, "New passwords").
   password_version = 1

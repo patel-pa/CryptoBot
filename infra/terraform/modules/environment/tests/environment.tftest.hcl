@@ -30,6 +30,7 @@ variables {
   }
 
   deletion_protection = false
+  keep_data           = false
   password_version    = 1
 }
 
@@ -524,6 +525,473 @@ run "every_name_path_condition_and_setting_follows_the_inputs" {
     ]) && output.model_s3 == { bucket = "cryptobot-models-test", key = "prod/model.pkl" }
     error_message = "prod's pod roles must serve only the prod namespace and only the prod/ model prefix."
   }
+}
+
+# What happens to the data (snapshots.tf). The prod runs use keep_data = true; the lookups
+# "does the database exist?" and "newest manual snapshot" are answered by overrides. Runs in
+# one file share their state, and the apply run above has already "created" dev's databases,
+# so the prod runs use their own states (state_key).
+
+run "dev_keeps_nothing_and_never_looks_for_snapshots" {
+  command = plan
+
+  assert {
+    condition = (
+      aws_db_instance.postgres.skip_final_snapshot == true &&
+      aws_db_instance.postgres.final_snapshot_identifier == null &&
+      aws_docdb_cluster.mongo.skip_final_snapshot == true &&
+      aws_docdb_cluster.mongo.final_snapshot_identifier == null &&
+      length(data.aws_db_instances.postgres) == 0 &&
+      length(data.aws_rds_clusters.mongo) == 0 &&
+      length(data.aws_db_snapshot.postgres) == 0 &&
+      length(data.aws_db_cluster_snapshot.mongo) == 0
+    )
+    error_message = "Dev keeps nothing: no final snapshot, and no lookups of databases or snapshots."
+  }
+
+  assert {
+    condition = alltrue([
+      for db in ["postgres", "mongo"] :
+      output.snapshots.restore_from[db] == null && output.snapshots.final_on_destroy[db] == null
+    ])
+    error_message = "Dev starts empty and leaves no snapshot behind."
+  }
+}
+
+run "prod_create_restores_the_newest_manual_snapshot" {
+  command   = plan
+  state_key = "prod" # its own, empty state: these runs plan a create
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = true
+    postgres            = { instance_class = "db.t4g.small", backup_retention_period = 7 }
+    mongo               = { instance_class = "db.t4g.medium", backup_retention_period = 7 }
+  }
+
+  # Neither database exists yet; the newest final snapshots are these.
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = [] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = [] }
+  }
+
+  override_data {
+    target = data.aws_db_snapshot.postgres[0]
+    values = { id = "cryptobot-prod-postgres-final-2026-11-20-1730" }
+  }
+
+  override_data {
+    target = data.aws_db_cluster_snapshot.mongo[0]
+    values = { id = "cryptobot-prod-mongo-final-2026-11-20-1730" }
+  }
+
+  assert {
+    condition = (
+      one(data.aws_db_instances.postgres[0].filter).name == "db-instance-id" &&
+      one(data.aws_db_instances.postgres[0].filter).values == toset(["cryptobot-prod-postgres"]) &&
+      one(data.aws_rds_clusters.mongo[0].filter).name == "db-cluster-id" &&
+      one(data.aws_rds_clusters.mongo[0].filter).values == toset(["cryptobot-prod-mongo"])
+    )
+    error_message = "The existence checks must ask for exactly this environment's databases."
+  }
+
+  assert {
+    condition = (
+      data.aws_db_snapshot.postgres[0].db_instance_identifier == "cryptobot-prod-postgres" &&
+      data.aws_db_snapshot.postgres[0].snapshot_type == "manual" &&
+      data.aws_db_snapshot.postgres[0].most_recent == true &&
+      data.aws_db_cluster_snapshot.mongo[0].db_cluster_identifier == "cryptobot-prod-mongo" &&
+      data.aws_db_cluster_snapshot.mongo[0].snapshot_type == "manual" &&
+      data.aws_db_cluster_snapshot.mongo[0].most_recent == true
+    )
+    error_message = "The lookups must find the newest MANUAL snapshot (final snapshots) of this environment's own databases."
+  }
+
+  assert {
+    condition = (
+      aws_db_instance.postgres.snapshot_identifier == "cryptobot-prod-postgres-final-2026-11-20-1730" &&
+      aws_docdb_cluster.mongo.snapshot_identifier == "cryptobot-prod-mongo-final-2026-11-20-1730" &&
+      output.snapshots.restore_from == {
+        postgres = "cryptobot-prod-postgres-final-2026-11-20-1730"
+        mongo    = "cryptobot-prod-mongo-final-2026-11-20-1730"
+      }
+    )
+    error_message = "A created database must be restored from the snapshot found for it."
+  }
+
+  assert {
+    condition = (
+      aws_db_instance.postgres.deletion_protection == true &&
+      aws_db_instance.postgres.skip_final_snapshot == false &&
+      aws_db_instance.postgres.final_snapshot_identifier == null &&
+      aws_db_instance.postgres.backup_retention_period == 7 &&
+      aws_docdb_cluster.mongo.deletion_protection == true &&
+      aws_docdb_cluster.mongo.skip_final_snapshot == false &&
+      aws_docdb_cluster.mongo.final_snapshot_identifier == null &&
+      aws_docdb_cluster.mongo.backup_retention_period == 7
+    )
+    error_message = "A running prod database is protected, keeps 7 days of backups and takes a final snapshot, whose name only teardown step 1 sets."
+  }
+}
+
+run "prod_running_never_looks_for_a_snapshot" {
+  command   = plan
+  state_key = "prod" # its own, empty state: these runs plan a create
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = true
+  }
+
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = ["cryptobot-prod-postgres"] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = ["cryptobot-prod-mongo"] }
+  }
+
+  assert {
+    condition = (
+      length(data.aws_db_snapshot.postgres) == 0 &&
+      length(data.aws_db_cluster_snapshot.mongo) == 0 &&
+      output.snapshots.restore_from == { postgres = null, mongo = null }
+    )
+    error_message = "While the databases exist, no snapshot is looked up (none may exist yet in the first session)."
+  }
+}
+
+run "prod_first_create_starts_empty" {
+  command   = plan
+  state_key = "prod" # its own, empty state: these runs plan a create
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = true
+    first_create        = true
+  }
+
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = [] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = [] }
+  }
+
+  assert {
+    condition = (
+      length(data.aws_db_snapshot.postgres) == 0 &&
+      length(data.aws_db_cluster_snapshot.mongo) == 0 &&
+      output.snapshots.restore_from == { postgres = null, mongo = null } &&
+      aws_db_instance.postgres.skip_final_snapshot == false &&
+      aws_docdb_cluster.mongo.skip_final_snapshot == false
+    )
+    error_message = "The very first create starts empty (no snapshot exists yet), but still keeps a final snapshot on destroy."
+  }
+}
+
+run "a_named_snapshot_wins_over_the_newest" {
+  command   = plan
+  state_key = "prod" # its own, empty state: these runs plan a create
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = true
+    restore_snapshots   = { mongo = "cryptobot-prod-mongo-final-2026-11-01-0900" }
+  }
+
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = [] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = [] }
+  }
+
+  override_data {
+    target = data.aws_db_snapshot.postgres[0]
+    values = { id = "cryptobot-prod-postgres-final-2026-11-20-1730" }
+  }
+
+  assert {
+    condition = (
+      length(data.aws_db_cluster_snapshot.mongo) == 0 &&
+      aws_docdb_cluster.mongo.snapshot_identifier == "cryptobot-prod-mongo-final-2026-11-01-0900" &&
+      aws_db_instance.postgres.snapshot_identifier == "cryptobot-prod-postgres-final-2026-11-20-1730"
+    )
+    error_message = "A snapshot named in restore_snapshots replaces the lookup for that database only."
+  }
+}
+
+run "teardown_step_1_names_the_final_snapshots" {
+  command   = plan
+  state_key = "prod" # its own, empty state: these runs plan a create
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = false
+  }
+
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = ["cryptobot-prod-postgres"] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = ["cryptobot-prod-mongo"] }
+  }
+
+  assert {
+    condition = (
+      aws_db_instance.postgres.deletion_protection == false &&
+      aws_docdb_cluster.mongo.deletion_protection == false &&
+      can(regex("^cryptobot-prod-postgres-final-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}$", aws_db_instance.postgres.final_snapshot_identifier)) &&
+      can(regex("^cryptobot-prod-mongo-final-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}$", aws_docdb_cluster.mongo.final_snapshot_identifier)) &&
+      trimprefix(aws_db_instance.postgres.final_snapshot_identifier, "cryptobot-prod-postgres-") == trimprefix(aws_docdb_cluster.mongo.final_snapshot_identifier, "cryptobot-prod-mongo-") &&
+      length(aws_docdb_cluster.mongo.final_snapshot_identifier) <= 63
+    )
+    error_message = "Teardown step 1 turns protection off and names both final snapshots after the same minute (DocumentDB allows 63 characters)."
+  }
+}
+
+# A running prod database is never replaced because of a newer snapshot: "created from" is
+# read only at creation (ignore_changes in databases.tf). First a (mock) create from one
+# snapshot, then a plan in which the configuration names a newer one.
+run "prod_is_created_from_a_snapshot" {
+  command   = apply
+  state_key = "prod-running"
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = true
+    restore_snapshots = {
+      postgres = "cryptobot-prod-postgres-final-2026-11-20-1730"
+      mongo    = "cryptobot-prod-mongo-final-2026-11-20-1730"
+    }
+  }
+
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = [] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = [] }
+  }
+
+  override_resource {
+    target = aws_iam_role.pod["api"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-prod-api" }
+  }
+
+  override_resource {
+    target = aws_iam_role.pod["retrain"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-prod-retrain" }
+  }
+
+  assert {
+    condition = (
+      aws_db_instance.postgres.snapshot_identifier == "cryptobot-prod-postgres-final-2026-11-20-1730" &&
+      aws_docdb_cluster.mongo.snapshot_identifier == "cryptobot-prod-mongo-final-2026-11-20-1730"
+    )
+    error_message = "The databases must be created from the named snapshots."
+  }
+}
+
+run "a_newer_snapshot_never_replaces_running_prod" {
+  command   = plan
+  state_key = "prod-running"
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = true
+    restore_snapshots = {
+      postgres = "cryptobot-prod-postgres-final-2026-11-27-1730"
+      mongo    = "cryptobot-prod-mongo-final-2026-11-27-1730"
+    }
+  }
+
+  # As if AWS did not see the running databases: the configuration then asks for the newer
+  # snapshots. Without ignore_changes, both databases would be deleted and re-created.
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = [] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = [] }
+  }
+
+  override_resource {
+    target = aws_iam_role.pod["api"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-prod-api" }
+  }
+
+  override_resource {
+    target = aws_iam_role.pod["retrain"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-prod-retrain" }
+  }
+
+  assert {
+    condition = (
+      aws_db_instance.postgres.snapshot_identifier == "cryptobot-prod-postgres-final-2026-11-20-1730" &&
+      aws_docdb_cluster.mongo.snapshot_identifier == "cryptobot-prod-mongo-final-2026-11-20-1730"
+    )
+    error_message = "A running database must keep the snapshot it was created from (else Terraform would replace it)."
+  }
+}
+
+# After a create that failed half-way, one database exists and the other does not: only the
+# missing one may be restored, from its own snapshot (both directions).
+run "only_the_missing_database_is_restored_postgres_exists" {
+  command   = plan
+  state_key = "prod"
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = true
+  }
+
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = ["cryptobot-prod-postgres"] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = [] }
+  }
+
+  override_data {
+    target = data.aws_db_cluster_snapshot.mongo[0]
+    values = { id = "cryptobot-prod-mongo-final-2026-11-20-1730" }
+  }
+
+  assert {
+    condition = (
+      length(data.aws_db_snapshot.postgres) == 0 &&
+      length(data.aws_db_cluster_snapshot.mongo) == 1 &&
+      output.snapshots.restore_from.postgres == null &&
+      output.snapshots.restore_from.mongo == "cryptobot-prod-mongo-final-2026-11-20-1730"
+    )
+    error_message = "With PostgreSQL running and DocumentDB missing, only DocumentDB is restored, from its own snapshot."
+  }
+}
+
+run "only_the_missing_database_is_restored_mongo_exists" {
+  command   = plan
+  state_key = "prod"
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = true
+  }
+
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = [] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = ["cryptobot-prod-mongo"] }
+  }
+
+  override_data {
+    target = data.aws_db_snapshot.postgres[0]
+    values = { id = "cryptobot-prod-postgres-final-2026-11-20-1730" }
+  }
+
+  assert {
+    condition = (
+      length(data.aws_db_snapshot.postgres) == 1 &&
+      length(data.aws_db_cluster_snapshot.mongo) == 0 &&
+      output.snapshots.restore_from.postgres == "cryptobot-prod-postgres-final-2026-11-20-1730" &&
+      output.snapshots.restore_from.mongo == null
+    )
+    error_message = "With DocumentDB running and PostgreSQL missing, only PostgreSQL is restored, from its own snapshot."
+  }
+}
+
+run "an_empty_snapshot_name_is_refused" {
+  command = plan
+
+  variables {
+    env               = "prod"
+    keep_data         = true
+    restore_snapshots = { postgres = " " }
+  }
+
+  expect_failures = [var.restore_snapshots]
+}
+
+run "first_create_and_named_snapshots_are_refused_together" {
+  command = plan
+
+  variables {
+    env               = "prod"
+    keep_data         = true
+    first_create      = true
+    restore_snapshots = { mongo = "cryptobot-prod-mongo-final-2026-11-20-1730" }
+  }
+
+  expect_failures = [var.restore_snapshots]
+}
+
+run "first_create_needs_keep_data" {
+  command = plan
+
+  variables {
+    first_create = true
+  }
+
+  expect_failures = [var.first_create]
+}
+
+run "restore_snapshots_takes_only_known_databases" {
+  command = plan
+
+  variables {
+    env               = "prod"
+    keep_data         = true
+    restore_snapshots = { redis = "some-snapshot" }
+  }
+
+  expect_failures = [var.restore_snapshots]
+}
+
+run "restore_snapshots_needs_keep_data" {
+  command = plan
+
+  variables {
+    restore_snapshots = { postgres = "some-snapshot" }
+  }
+
+  expect_failures = [var.restore_snapshots]
 }
 
 run "only_dev_and_prod_exist" {

@@ -10,21 +10,24 @@ configures the AWS and Kubernetes providers and reads the platform and bootstrap
 
 ## Inputs
 
-| Input | What it decides | dev |
-|---|---|---|
-| `env` | namespace, secret path `cryptobot/<env>/`, model prefix `<env>/`, names `cryptobot-<env>-…`; only `dev` or `prod` | `dev` |
-| `region` | where the databases and secrets live | `eu-central-1` |
-| `platform` | the platform layer's network, cluster and External Secrets controller role (`applied = false` while it is destroyed) | from its state |
-| `model_bucket` | the bootstrap layer's model bucket | from its state |
-| `postgres` | instance size, days of automatic backups | `db.t4g.micro`, 1 |
-| `mongo` | DocumentDB instance size, days of automatic backups | `db.t4g.medium`, 1 |
-| `deletion_protection` | AWS refuses to delete either database while true | `false` |
-| `password_version` | raise by one for new passwords (below) | `1` |
+| Input | What it decides | dev | prod |
+|---|---|---|---|
+| `env` | namespace, secret path `cryptobot/<env>/`, model prefix `<env>/`, names `cryptobot-<env>-…`; only `dev` or `prod` | `dev` | `prod` |
+| `region` | where the databases and secrets live | `eu-central-1` | `eu-central-1` |
+| `platform` | the platform layer's network, cluster and External Secrets controller role (`applied = false` while it is destroyed) | from its state | from its state |
+| `model_bucket` | the bootstrap layer's model bucket | from its state | from its state |
+| `postgres` | instance size, days of automatic backups | `db.t4g.micro`, 1 | `db.t4g.small`, 7 |
+| `mongo` | DocumentDB instance size, days of automatic backups | `db.t4g.medium`, 1 | `db.t4g.medium`, 7 |
+| `deletion_protection` | AWS refuses to delete either database while true | `false` | `true` (teardown step 1: `false`) |
+| `keep_data` | final snapshot on destroy, restore on create (below) | `false` | `true` |
+| `first_create` | the very first create starts empty (no snapshot exists yet) | – | `false` (`true` once) |
+| `restore_snapshots` | restore these snapshots instead of the newest | – | `{}` |
+| `password_version` | raise by one for new passwords (below) | `1` | `1` |
 
 Everything else is fixed here for every environment: PostgreSQL 18, DocumentDB 8.0.2 (the same
 majors as docker compose and the kind overlay: `postgres:18`, `mongo:8.0`; change them together),
 20 GB gp3, the ports, the database and user names, one zone, encryption, the firewall rules and
-every IAM policy. For now also: no final snapshot on destroy (an input once prod keeps its data).
+every IAM policy.
 
 ## What it creates
 
@@ -38,6 +41,51 @@ every IAM policy. For now also: no final snapshot on destroy (an input once prod
 | IAM role `cryptobot-<env>-external-secrets` | trusted by the External Secrets controller only for a SecretStore in `<env>`; may only read `cryptobot/<env>/*` | One environment can never read the other's secrets |
 | SecretStore `aws-secrets-manager` | in the `<env>` namespace, uses that role, `sessionTagsPolicy: Simple` | What the overlay's ExternalSecrets refer to |
 | IAM roles `cryptobot-<env>-api`, `cryptobot-<env>-retrain` + Pod Identity associations | `api` may read, `retrain` may write `<env>/*` in the model bucket | The model moves through S3, never between environments |
+
+## What happens to the data (`snapshots.tf`)
+
+**`keep_data = false` (dev):** nothing is kept. Destroy deletes the databases together with their
+automatic backups, and every create starts empty.
+
+**`keep_data = true` (prod):**
+
+- **Destroy saves a final snapshot** of each database before deleting it. AWS needs a new name for
+  every snapshot, so the name is set by **teardown step 1**: an apply with
+  `deletion_protection = false` turns the protection off and names the snapshots after the time of
+  that plan, for example `cryptobot-prod-postgres-final-2026-11-20-1730` and
+  `cryptobot-prod-mongo-final-2026-11-20-1730`. Step 2 is the destroy. Without step 1 the destroy
+  stops before deleting a database: AWS refuses while the protection is on, and Terraform has no
+  snapshot name (`final_snapshot_identifier is required`). Nothing is lost then; run step 1 and
+  destroy again.
+- **Creating a database restores the newest final snapshot.** Terraform first asks AWS whether the
+  database exists (`aws_db_instances`, `aws_rds_clusters`: an empty list, never an error). Only if
+  it does not, which means this run creates it, does it look up the newest **manual** snapshot of
+  that database (`aws_db_snapshot`, `aws_db_cluster_snapshot`, `most_recent`). Final snapshots are
+  manual ones; the daily automatic backups are not, and AWS deletes those together with the
+  database here (`delete_automated_backups`). So a running environment never needs a snapshot,
+  and teardown and destroy also work in the very first session, when none exists yet.
+- **No snapshot at all** (the very first create) stops the plan with
+  `Your query returned no results`. That is on purpose: an empty prod database must never be
+  created by accident. `first_create = true` creates empty databases instead.
+- **`restore_snapshots`** names a snapshot per database (keys `postgres`, `mongo`) to restore
+  instead of the newest one: an older one after a bad change, or the fallback if a lookup ever
+  finds nothing. DocumentDB runs on the RDS API, so the RDS lookups see its clusters and snapshots
+  too.
+- **A running database is never replaced because of a snapshot.** "Created from" can only be set
+  when a database is created; if it changed later (for example a newer snapshot appeared during a
+  restore test), Terraform would delete and re-create the database. `ignore_changes =
+  [snapshot_identifier]` makes Terraform read it only at creation (tested: a mock create from one
+  snapshot, then a plan naming a newer one, keeps the first).
+- **The password after a restore:** the snapshot still holds the password of the session it was
+  taken in. Terraform writes a new one into the credentials secret, restores the database and then
+  sets that password with a second AWS call (the provider does this for `password_wo` and
+  `master_password_wo` after every restore; checked in its source, `internal/service/rds/instance.go`
+  and `internal/service/docdb/cluster.go`). So the secret is right again, and the old password no
+  longer works.
+
+The output `snapshots` shows both in every plan: `restore_from` (the snapshot each database is
+created from in this run; `null` = starts empty, or already exists) and `final_on_destroy` (the
+name its final snapshot will get; `null` = no teardown step 1 yet).
 
 Both databases: no Performance Insights, no enhanced monitoring, no log exports. PostgreSQL gets
 minor version updates automatically; DocumentDB never applies minor updates on its own (8.0.2
@@ -132,10 +180,12 @@ terraform validate
 terraform test          # tests/*.tftest.hcl, against a mock provider; Terraform 1.17+
 ```
 
-The tests run with dev's values, plus one run with `env = "prod"` and other sizes, backup days,
-protection and password version: every name, path and trust condition must follow the
-environment, and every setting its own input. Each layer's own tests check that it passes its
-values in.
+The tests run with dev's values, plus runs with `env = "prod"`: with other sizes, backup days,
+protection and password version, every name, path and trust condition must follow the
+environment and every setting its own input; and the data lifecycle (restore from the newest
+manual snapshot only on create, never while running, empty on the first create, a named snapshot
+wins, teardown step 1 names the snapshots, a newer snapshot never replaces a running database).
+Each layer's own tests check that it passes its values in.
 
 ## Deliberately not enabled
 
@@ -148,6 +198,13 @@ values in.
   expire.
 - **IAM database authentication:** the app signs in with the password from Secrets Manager; IAM
   tokens would need app changes and expire every 15 minutes.
+
+- **Keeping the automatic backups after a destroy** (`delete_automated_backups = false`): the
+  final snapshot is what is kept; retained backups would cost money for 7 more days and are not
+  needed to restore.
+- **A recovery window for the secrets:** the next session creates the same names again, and a
+  deleted secret holds nothing worth keeping (the data is in the snapshots, and the password is
+  new at every create).
 
 Scanners (Trivy, Checkov) report exactly these choices: no customer-managed KMS key, no
 rotation, no Multi-AZ, no logs or monitoring, no IAM authentication (and, with dev's values,

@@ -1,5 +1,6 @@
-# The two databases of one environment: one zone, encrypted, private. Size, backup days and
-# deletion protection come from the calling layer; everything else is the same everywhere.
+# The two databases of one environment: one zone, encrypted, private. Size, backup days,
+# deletion protection and what happens to the data (snapshots.tf) come from the calling
+# layer; everything else is the same everywhere.
 # TLS is enforced by AWS's default parameter groups (checked 11 Nov 2026: postgres18
 # rds.force_ssl = 1, docdb8.0 tls = tls1.2+), so no own parameter groups.
 
@@ -15,7 +16,7 @@ locals {
     allocated_storage       = 20 # GB, the gp3 minimum; no storage autoscaling
     backup_retention_period = var.postgres.backup_retention_period
     deletion_protection     = var.deletion_protection
-    skip_final_snapshot     = true
+    skip_final_snapshot     = !var.keep_data
     port                    = 5432
     db_name                 = "cryptobot"
     username                = "cryptobot"
@@ -27,7 +28,7 @@ locals {
     instance_count          = 1
     backup_retention_period = var.mongo.backup_retention_period
     deletion_protection     = var.deletion_protection
-    skip_final_snapshot     = true
+    skip_final_snapshot     = !var.keep_data
     port                    = 27017
     db_name                 = "cryptobot" # created by the app's first write
     username                = "cryptobot"
@@ -55,11 +56,13 @@ resource "aws_db_instance" "postgres" {
   publicly_accessible    = false
   multi_az               = false
 
-  backup_retention_period  = local.postgres.backup_retention_period
-  deletion_protection      = local.postgres.deletion_protection
-  skip_final_snapshot      = local.postgres.skip_final_snapshot
-  delete_automated_backups = true
-  copy_tags_to_snapshot    = true
+  backup_retention_period   = local.postgres.backup_retention_period
+  deletion_protection       = local.postgres.deletion_protection
+  skip_final_snapshot       = local.postgres.skip_final_snapshot
+  final_snapshot_identifier = local.final_snapshot["postgres"]
+  snapshot_identifier       = local.restore_from["postgres"]
+  delete_automated_backups  = true # gone with the database (with keep_data, the final snapshot stays)
+  copy_tags_to_snapshot     = true
 
   auto_minor_version_upgrade = true
   apply_immediately          = true
@@ -68,6 +71,13 @@ resource "aws_db_instance" "postgres" {
   performance_insights_enabled    = false
   monitoring_interval             = 0
   enabled_cloudwatch_logs_exports = []
+
+  lifecycle {
+    # Used only when the database is created. AWS cannot change it later, so Terraform would
+    # delete and re-create the running database if a newer snapshot appeared (for example
+    # during a restore test): never compare it again.
+    ignore_changes = [snapshot_identifier]
+  }
 }
 
 resource "aws_docdb_cluster" "mongo" {
@@ -84,12 +94,18 @@ resource "aws_docdb_cluster" "mongo" {
   vpc_security_group_ids = [aws_security_group.db["mongo"].id]
   storage_encrypted      = true
 
-  backup_retention_period = local.mongo.backup_retention_period
-  deletion_protection     = local.mongo.deletion_protection
-  skip_final_snapshot     = local.mongo.skip_final_snapshot
-  apply_immediately       = true
+  backup_retention_period   = local.mongo.backup_retention_period
+  deletion_protection       = local.mongo.deletion_protection
+  skip_final_snapshot       = local.mongo.skip_final_snapshot
+  final_snapshot_identifier = local.final_snapshot["mongo"]
+  snapshot_identifier       = local.restore_from["mongo"]
+  apply_immediately         = true
 
   enabled_cloudwatch_logs_exports = [] # a log group without retention otherwise
+
+  lifecycle {
+    ignore_changes = [snapshot_identifier] # as for PostgreSQL above
+  }
 }
 
 resource "aws_docdb_cluster_instance" "mongo" {

@@ -107,8 +107,8 @@ namespaces first, and the controller is removed only after them and before the N
 routes, so it can still delete the ALB of an Ingress forgotten in them (not in any other
 namespace). Check afterwards that no ALB is left.
 
-Then destroy `envs/dev` (and later `envs/prod`) with their own plan and apply, and then this
-layer (see above). The container log groups belong to the bootstrap
+Then destroy `envs/dev` and `envs/prod` with their own plan and apply (`envs/prod` in two
+steps, and its final snapshots stay on purpose: see its README), and then this layer (see above). The container log groups belong to the bootstrap
 layer and stay (7 days). No PersistentVolumeClaims, so no EBS volumes are left behind.
 
 ## Pod budget

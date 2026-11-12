@@ -54,3 +54,11 @@ output "databases" {
     }
   }
 }
+
+output "snapshots" {
+  description = "restore_from: the snapshot each database is created from in this run (null = starts empty, or already exists). final_on_destroy: the name its final snapshot gets on destroy (set by teardown step 1; null = none)."
+  value = {
+    restore_from     = local.restore_from
+    final_on_destroy = local.final_snapshot
+  }
+}

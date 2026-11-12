@@ -73,7 +73,7 @@ src/
 ├── params/         # constants, enums
 └── utils/          # time / url / dataframe helpers
 k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (kind), overlays/dev (EKS); prod follows
-infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/ and envs/dev/ (destroyed after every session; envs/prod/ follows); modules/environment/ = the databases, secrets and roles of one environment, shared by envs/dev and envs/prod
+infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/, envs/dev/ and envs/prod/ (destroyed after every session; prod leaves a final snapshot and is restored from it); modules/environment/ = the databases, secrets and roles of one environment, shared by envs/dev and envs/prod
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
 .github/workflows/  # CI (python-app.yml); CD (cd.yml): every push to dev → tests, image, Trivy scan, push to ECR, deploy to dev (skipped while no cluster runs); by hand: deploy or roll back

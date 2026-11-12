@@ -80,6 +80,14 @@ run "dev_passes_its_values_to_the_module" {
   }
 
   assert {
+    condition = alltrue([
+      for db in ["postgres", "mongo"] :
+      module.environment.snapshots.restore_from[db] == null && module.environment.snapshots.final_on_destroy[db] == null
+    ])
+    error_message = "dev keeps no data (keep_data = false): no restore, no final snapshot."
+  }
+
+  assert {
     condition = (
       output.secret_names == {
         postgres            = "cryptobot/dev/postgres"
