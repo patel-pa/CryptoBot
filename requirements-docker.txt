@@ -5,30 +5,30 @@
 # Versions are pinned to match the project's tested environment.
 
 # --- Web API ---
-fastapi==0.136.3
-uvicorn==0.49.0
+fastapi==0.162.0
+uvicorn==0.54.0
 websockets==16.0
 prometheus-client==0.26.0    # /metrics for Prometheus (Task 9); no dependencies of its own
 
 # --- Databases ---
-SQLAlchemy==2.0.50
-psycopg2-binary==2.9.12      # binary build: no compiler/libpq needed in the image
+SQLAlchemy==2.1.8
+psycopg2-binary==2.9.13      # binary build: no compiler/libpq needed in the image
 pymongo==4.20.0              # 4.17 has HIGH CVEs (Trivy); 4.18-4.19 leak memory with TLS on Python 3.11
 dnspython==2.9.2
 
 # --- Data & ML ---
-pandas==3.0.3
-numpy==2.4.4
+pandas==3.1.1
+numpy==2.4.6
 scikit-learn==1.9.1
-joblib==1.5.3
+joblib==1.6.0
 
 # --- Clients / config ---
-requests==2.34.0
-websocket-client==1.9.0
-python-dotenv==1.2.2
-boto3==1.43.117              # AWS SDK: model upload/download in S3 (Task 5)
+requests==2.34.2
+websocket-client==1.9.2
+python-dotenv==1.2.4
+boto3==1.43.125              # AWS SDK: model upload/download in S3 (Task 5)
 
 # --- Dashboard ---
-streamlit==1.66.1            # at least 1.66.1: the first release that allows Pillow 13
+streamlit==1.67.0            # at least 1.66.1: the first release that allows Pillow 13
 pillow==13.0.0               # comes with streamlit; pinned: 12.x has CRITICAL CVEs (Trivy)
 plotly==6.8.0
