@@ -228,7 +228,7 @@ Then destroy `envs/dev`, and `platform` once `envs/dev` and `envs/prod` (whichev
 
 ## Deploy to prod on EKS
 
-The same app in the `prod` namespace of the same cluster: `k8s/overlays/prod` is the dev overlay with prod's values (secrets `cryptobot/prod/*`, model `prod/model.pkl`, its own ALB `cryptobot-prod`, two API pods, the history since 1 Oct 2026). Needs the Terraform layers `platform` and then `envs/prod` applied (its README: the very first create, the restore from the newest final snapshot, the teardown in two steps). Prod is deployed only from `main`, after your approval, with the image that was built, tested and scanned on `dev`: nothing is built for prod.
+The same app in the `prod` namespace of the same cluster: `k8s/overlays/prod` is the dev overlay with prod's values (secrets `cryptobot/prod/*`, model `prod/model.pkl`, its own ALB `cryptobot-prod`, two API pods, the history since 1 Oct 2026). Needs the Terraform layers `platform` and then `envs/prod` applied (its README: the very first create, the restore from the newest final snapshot, the teardown in two steps). **After a restore, plan and apply `envs/prod` once more before deploying:** that second apply gives the restored DocumentDB its new password (a restored DocumentDB keeps the snapshot's old one; the plan shows exactly one change). Prod is deployed only from `main`, after your approval, with the image that was built, tested and scanned on `dev`: nothing is built for prod.
 
 ### Once, before the first merge: the GitHub environment `production`
 

@@ -80,6 +80,19 @@ resource "aws_db_instance" "postgres" {
   }
 }
 
+# DocumentDB's password version: 2 × password_version in a run that restores the cluster from
+# a snapshot, 2 × password_version + 1 in every other run. Why: a restored cluster has no
+# instance yet when the provider sends the new password (the instance below is created after
+# the cluster), and AWS accepts that call without applying it, so the cluster keeps the
+# snapshot's old password (prod rehearsal, 13 Nov 2026; PostgreSQL is not affected: a
+# restored RDS instance is the server itself). The number then changes in the next apply,
+# which sends the same password again, from the unchanged secret, now that the instance runs.
+# Creates without a restore (dev, prod's very first) set the password in the create call and
+# start at + 1. Raising password_version changes the number in every case.
+locals {
+  mongo_password_wo_version = 2 * var.password_version + (local.restore_from["mongo"] != null ? 0 : 1)
+}
+
 resource "aws_docdb_cluster" "mongo" {
   cluster_identifier = "${local.name}-mongo"
   engine             = "docdb"
@@ -87,7 +100,7 @@ resource "aws_docdb_cluster" "mongo" {
 
   master_username            = local.mongo.username
   master_password_wo         = local.passwords["mongo"]
-  master_password_wo_version = var.password_version
+  master_password_wo_version = local.mongo_password_wo_version # not var.password_version: see above
   port                       = local.mongo.port
 
   db_subnet_group_name   = aws_docdb_subnet_group.mongo.name

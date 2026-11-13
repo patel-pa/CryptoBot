@@ -22,7 +22,7 @@ configures the AWS and Kubernetes providers and reads the platform and bootstrap
 | `keep_data` | final snapshot on destroy, restore on create (below) | `false` | `true` |
 | `first_create` | the very first create starts empty (no snapshot exists yet) | – | `false` (`true` once) |
 | `restore_snapshots` | restore these snapshots instead of the newest | – | `{}` |
-| `password_version` | raise by one for new passwords (below) | `1` | `1` |
+| `password_version` | raise by one for new passwords (below); DocumentDB's own version number is derived from it (`2 × password_version + 1`, or `2 × password_version` in a run that restores it) | `1` | `1` |
 
 Everything else is fixed here for every environment: PostgreSQL 18, DocumentDB 8.0.2 (the same
 majors as docker compose and the kind overlay: `postgres:18`, `mongo:8.0`; change them together),
@@ -76,16 +76,37 @@ automatic backups, and every create starts empty.
   restore test), Terraform would delete and re-create the database. `ignore_changes =
   [snapshot_identifier]` makes Terraform read it only at creation (tested: a mock create from one
   snapshot, then a plan naming a newer one, keeps the first).
-- **The password after a restore:** the snapshot still holds the password of the session it was
-  taken in. Terraform writes a new one into the credentials secret, restores the database and then
-  sets that password with a second AWS call (the provider does this for `password_wo` and
-  `master_password_wo` after every restore; checked in its source, `internal/service/rds/instance.go`
-  and `internal/service/docdb/cluster.go`). So the secret is right again, and the old password no
-  longer works.
+- **The password after a restore: plan and apply once more, then deploy.** The snapshot still
+  holds the password of the session it was taken in. Terraform writes a new one into the
+  credentials secret, restores the database and then sets that password with a second AWS call
+  (the provider does this for `password_wo` and `master_password_wo` after every restore; checked
+  in its source, `internal/service/rds/instance.go` and `internal/service/docdb/cluster.go`).
+  - **PostgreSQL** takes it at once: a restored RDS instance is the database server itself.
+  - **DocumentDB does not.** A DocumentDB cluster is the storage (the data and the database
+    users); the servers are its instances, and a restore creates the cluster without one. The
+    provider's password call comes in that gap, before Terraform creates the instance (which
+    depends on the cluster): AWS accepts it without an error but does not apply it, so the cluster
+    keeps the snapshot's old password (found in the prod rehearsal on 13 Nov 2026, in CloudTrail;
+    the same call sent while the instance ran worked at once).
+  - So DocumentDB's password version is `2 × password_version` in the run that restores it and
+    `2 × password_version + 1` in every other run (`databases.tf`). The **next plan after a
+    restore** therefore shows exactly one change (`1 to change`) on `aws_docdb_cluster.mongo`:
+    `master_password_wo_version` from `2 × password_version` to `2 × password_version + 1`
+    (`2 -> 3` while `password_version` is 1). Its apply sends the same password again, from the
+    unchanged secret, now that the instance runs. Until then the app's DocumentDB sign-in fails
+    (`Authentication failed`). Creates without a restore (dev, and prod's very first create)
+    set the password in the create call itself and start at `+ 1`, so their next plan shows no
+    change.
+  - One exception: if the restore apply failed before the instance existed, the next apply
+    sends the password again *before* it creates the instance (the instance depends on the
+    cluster), and AWS drops it the same way; afterwards the plan shows no change. Then raise
+    `password_version` once the instance runs (below, "New passwords").
 
 The output `snapshots` shows both in every plan: `restore_from` (the snapshot each database is
 created from in this run; `null` = starts empty, or already exists) and `final_on_destroy` (the
-name its final snapshot will get; `null` = no teardown step 1 yet).
+name its final snapshot will get; `null` = no teardown step 1 yet). The plan after a restore
+therefore also shows `restore_from` changing from the snapshot names to `null`: an output-only
+change (the databases exist now), saved by that plan's apply.
 
 Both databases: no Performance Insights, no enhanced monitoring, no log exports. PostgreSQL gets
 minor version updates automatically; DocumentDB never applies minor updates on its own (8.0.2
@@ -109,9 +130,10 @@ The databases read their passwords back from exactly the secret versions just wr
 fails half-way. External Secrets merges both secrets of a database into one Kubernetes Secret.
 
 **New passwords:** raise `password_version` in the layer's `main.tf` (`envs/<env>/main.tf`) and
-apply. The secrets get new values first, then the databases read them back. Running pods keep the
-old password until they restart, and External Secrets copies the new one into Kubernetes only at
-its next hourly refresh: force that first, then restart the pods (commands in
+apply. The secrets get new values first, then the databases read them back (the plan shows
+DocumentDB's derived number, for example `3 -> 5` for `password_version` 1 → 2). Running pods
+keep the old password until they restart, and External Secrets copies the new one into
+Kubernetes only at its next hourly refresh: force that first, then restart the pods (commands in
 `k8s/overlays/<env>/external-secrets.yaml`). If AWS rejects the database change (for example
 because the instance is busy), the secret already holds the new password while the database keeps
 the old one, and Terraform cannot see the difference (AWS never reports a password): raise
@@ -184,7 +206,10 @@ The tests run with dev's values, plus runs with `env = "prod"`: with other sizes
 protection and password version, every name, path and trust condition must follow the
 environment and every setting its own input; and the data lifecycle (restore from the newest
 manual snapshot only on create, never while running, empty on the first create, a named snapshot
-wins, teardown step 1 names the snapshots, a newer snapshot never replaces a running database).
+wins, teardown step 1 names the snapshots, a newer snapshot never replaces a running database)
+and the password after a restore (DocumentDB's version `2 × password_version` in the restoring
+run, `+ 1` in the next, which changes nothing else; constant in dev; raising `password_version`
+still changes both databases' passwords).
 Each layer's own tests check that it passes its values in.
 
 ## Deliberately not enabled
