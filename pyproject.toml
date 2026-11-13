@@ -1,9 +1,17 @@
-# Tool settings only. The app's dependencies stay in requirements-docker.txt,
-# the development tools in requirements-dev.txt.
+# Project information and tool settings. The app's dependencies stay in
+# requirements-docker.txt, the development tools in requirements-dev.txt.
+
+[project]
+name = "cryptobot"
+version = "2.0.0"
+# The Python of the Docker image. Dependabot proposes only releases that support it, and
+# ruff uses its lower bound as the target version. The upper bound says that only 3.11 is
+# supported: if Dependabot ever stops offering 3.11, its runs fail instead of quietly
+# checking against 3.12.
+requires-python = ">=3.11,<3.12"
 
 [tool.ruff]
 line-length = 127                    # the limit of the earlier flake8 setup, kept
-target-version = "py311"             # the Python version of the Docker image
 extend-exclude = ["notebooks"]       # exploration notebooks, not production code
 
 [tool.ruff.lint]
