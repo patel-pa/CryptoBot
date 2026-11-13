@@ -31,4 +31,4 @@ boto3==1.43.125              # AWS SDK: model upload/download in S3 (Task 5)
 # --- Dashboard ---
 streamlit==1.67.0            # at least 1.66.1: the first release that allows Pillow 13
 pillow==13.0.0               # comes with streamlit; pinned: 12.x has CRITICAL CVEs (Trivy)
-plotly==6.8.0
+plotly==7.1.0
