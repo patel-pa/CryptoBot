@@ -1,0 +1,17 @@
+# Misconfigurations that Trivy reports as CRITICAL but that are accepted on purpose, read by
+# the config scan in .github/workflows/ci.yml. Each one is a documented choice (platform
+# README, "Deliberately not enabled"); any other CRITICAL finding fails CI. The paths are the
+# files Trivy names in a fresh checkout: it downloads the EKS registry module itself.
+misconfigurations:
+  # The EKS API endpoint is reachable from the internet: GitHub-hosted runners deploy from
+  # changing addresses, and every call still needs IAM credentials.
+  - id: AWS-0040
+    paths: ["terraform-aws-modules/eks/aws/main.tf"]
+    statement: Public EKS API endpoint for GitHub-hosted runners; IAM credentials still required
+  - id: AWS-0041
+    paths: ["terraform-aws-modules/eks/aws/main.tf"]
+    statement: The public endpoint is open to 0.0.0.0/0 because runner addresses change
+  # The nodes may connect out to anywhere (Binance, ECR, AWS APIs); nothing may connect in.
+  - id: AWS-0104
+    paths: ["terraform-aws-modules/eks/aws/node_groups.tf"]
+    statement: Nodes need outbound internet access; inbound stays closed

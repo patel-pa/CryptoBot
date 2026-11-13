@@ -2,7 +2,7 @@
 # the development tools in requirements-dev.txt.
 
 [tool.ruff]
-line-length = 127                    # same limit as the flake8 step in CI
+line-length = 127                    # the limit of the earlier flake8 setup, kept
 target-version = "py311"             # the Python version of the Docker image
 extend-exclude = ["notebooks"]       # exploration notebooks, not production code
 

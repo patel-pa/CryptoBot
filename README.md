@@ -41,7 +41,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 **Dashboard:** Streamlit + Plotly
 **ML:** scikit-learn, pandas, joblib
 **Scheduling:** two commands, `python -m src.cli ingest` and `retrain`, run as Kubernetes CronJobs in v2 (run on EKS dev); v1.0 used Apache Airflow
-**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS, GitHub Actions (CI: flake8 + pytest + image build; CD: tests, Trivy scan, push to Amazon ECR via OIDC, deploy to the dev namespace on EKS; merges into `main` go to the prod namespace after approval, with the same image by digest (rehearsed once, 13 Nov 2026); manual deploy or rollback by SHA)
+**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS, GitHub Actions (CI: ruff + pytest, image build + Trivy scan, Kubernetes manifest validation, Terraform tests, workflow linting; CD: tests, Trivy scan, push to Amazon ECR via OIDC, deploy to the dev namespace on EKS; merges into `main` go to the prod namespace after approval, with the same image by digest (rehearsed once, 13 Nov 2026); manual deploy or rollback by SHA)
 **Testing:** pytest
 
 ---
@@ -54,7 +54,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 - **Scheduled jobs** — two commands keep the system current: `python -m src.cli ingest` re-runs the idempotent collector, and `python -m src.cli retrain` catches the data up and retrains the model. On Kubernetes they run as CronJobs, every 15 minutes and daily (proven on EKS dev); in docker compose, `historical` runs `ingest` on every `up` and `retrain` is run by hand. The API picks up a newer model by itself (S3 on AWS, a local file in docker compose), no restart needed. Each command's exit code tells the scheduler whether it failed.
 - **Verified data quality** — **~240,000+** one-minute BTC/USDT candles loaded with **0 gaps** (and growing with every ingest run), confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
 - **Predicted-vs-actual tracking** — every `/predict` call is persisted, so `/predictions` can join each forecast against the candle's real close for later evaluation.
-- **CI on every push** — GitHub Actions runs flake8 (fails on syntax/undefined-name errors), the pytest suite, and a Docker image build.
+- **CI on every push** (every branch except `main`) — GitHub Actions runs every check that needs no AWS: ruff and the pytest suite, the image build and its Trivy scan (the same steps CD runs, so on `dev` only CD runs them), the three Kustomize overlays rendered and validated against the Kubernetes 1.37 API (kubeconform, strict), a Trivy misconfiguration scan of the Terraform code and the dev/prod manifests (fails on CRITICAL; the accepted findings are listed with their reasons in `.trivyignore.yaml`), and actionlint + zizmor on the workflows. When `infra/terraform/` changes, each Terraform folder gets `fmt -check`, `validate` and its mock-provider tests.
 - **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA, then deployed to the `dev` namespace on EKS (skipped while no cluster runs); started by hand, it deploys or rolls back to any image already in ECR without rebuilding. A merge into `main` waits for approval, checks that `main` holds exactly the tested dev commit's files, and deploys that commit's image by digest to the `prod` namespace (rehearsed once, 13 Nov 2026). GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
 
 ---
@@ -76,7 +76,7 @@ k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (
 infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/, envs/dev/ and envs/prod/ (destroyed after every session; prod leaves a final snapshot and is restored from it); modules/environment/ = the databases, secrets and roles of one environment, shared by envs/dev and envs/prod
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
-.github/workflows/  # CI (python-app.yml); CD (cd.yml): every push to dev → tests, image, Trivy scan, push to ECR, deploy to dev; every merge of dev into main → approval → the same image to prod (by digest); deploys skip while no cluster runs; by hand: deploy or roll back
+.github/            # actions/test-build-scan: tests, image, Trivy scan (used by CI and CD); workflows/: CI (ci.yml, terraform.yml), CD (cd.yml): every push to dev → tests, image, Trivy scan, push to ECR, deploy to dev; every merge of dev into main → approval → the same image to prod (by digest); deploys skip while no cluster runs; by hand: deploy or roll back
 docker-compose.yml  # full stack: postgres, mongo, init, historical, streamer, api, dashboard
 ```
 
@@ -305,4 +305,4 @@ docker run --rm cryptobot-test        # ruff check . + pytest
 
 Without Docker (Python 3.11): `pip install -r requirements-docker.txt -r requirements-dev.txt`, then `ruff check .` and `pytest`.
 
-CI runs the same pytest suite plus flake8 linting (ruff replaces it in CI later) and a Docker image build on every push (see `.github/workflows/python-app.yml`).
+CI runs exactly these two commands, then builds the runtime image and scans it with Trivy (`.github/actions/test-build-scan`, used by `.github/workflows/ci.yml` and `cd.yml`).
