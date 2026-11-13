@@ -13,8 +13,8 @@ prometheus-client==0.26.0    # /metrics for Prometheus (Task 9); no dependencies
 # --- Databases ---
 SQLAlchemy==2.0.50
 psycopg2-binary==2.9.12      # binary build: no compiler/libpq needed in the image
-pymongo==4.17.0
-dnspython==2.8.0
+pymongo==4.20.0              # 4.17 has HIGH CVEs (Trivy); 4.18-4.19 leak memory with TLS on Python 3.11
+dnspython==2.9.2
 
 # --- Data & ML ---
 pandas==3.0.3
