@@ -6,7 +6,7 @@ An end-to-end data engineering platform that ingests Binance BTC/USDT market dat
 
 ## v2 in progress
 
-Version 2 moves the platform to AWS: Amazon EKS, Amazon RDS for PostgreSQL and Amazon DocumentDB, all infrastructure built by Terraform, delivery by GitHub Actions. The dev path (push to `dev` → tests → vulnerability scan → deploy to EKS) has run end to end on AWS; the prod path (merge into `main` → approval → the same image, by digest) is written and its first rehearsal is pending. The AWS environments exist only during work sessions: Terraform creates and destroys them to keep the cost low. Monitoring, alerting and the disaster-recovery documentation are still to come. The finished Data Engineering version (v1) is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
+Version 2 moves the platform to AWS: Amazon EKS, Amazon RDS for PostgreSQL and Amazon DocumentDB, all infrastructure built by Terraform, delivery by GitHub Actions. The dev path (push to `dev` → tests → vulnerability scan → deploy to EKS) has run end to end on AWS; the prod path (merge into `main` → approval → the same image, by digest) was rehearsed once on AWS on 13 Nov 2026, including the teardown with final snapshots and the restore from them. The AWS environments exist only during work sessions: Terraform creates and destroys them to keep the cost low. Monitoring, alerting and the disaster-recovery documentation are still to come. The finished Data Engineering version (v1) is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
 
 ---
 
@@ -41,7 +41,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 **Dashboard:** Streamlit + Plotly
 **ML:** scikit-learn, pandas, joblib
 **Scheduling:** two commands, `python -m src.cli ingest` and `retrain`, run as Kubernetes CronJobs in v2 (run on EKS dev); v1.0 used Apache Airflow
-**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS, GitHub Actions (CI: flake8 + pytest + image build; CD: tests, Trivy scan, push to Amazon ECR via OIDC, deploy to the dev namespace on EKS; merges into `main` go to the prod namespace after approval, with the same image by digest (first rehearsal pending); manual deploy or rollback by SHA)
+**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS, GitHub Actions (CI: flake8 + pytest + image build; CD: tests, Trivy scan, push to Amazon ECR via OIDC, deploy to the dev namespace on EKS; merges into `main` go to the prod namespace after approval, with the same image by digest (rehearsed once, 13 Nov 2026); manual deploy or rollback by SHA)
 **Testing:** pytest
 
 ---
@@ -55,7 +55,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 - **Verified data quality** — **~240,000+** one-minute BTC/USDT candles loaded with **0 gaps** (and growing with every ingest run), confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
 - **Predicted-vs-actual tracking** — every `/predict` call is persisted, so `/predictions` can join each forecast against the candle's real close for later evaluation.
 - **CI on every push** — GitHub Actions runs flake8 (fails on syntax/undefined-name errors), the pytest suite, and a Docker image build.
-- **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA, then deployed to the `dev` namespace on EKS (skipped while no cluster runs); started by hand, it deploys or rolls back to any image already in ECR without rebuilding. A merge into `main` waits for approval, checks that `main` holds exactly the tested dev commit's files, and deploys that commit's image by digest to the `prod` namespace (written; first rehearsal pending). GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
+- **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA, then deployed to the `dev` namespace on EKS (skipped while no cluster runs); started by hand, it deploys or rolls back to any image already in ECR without rebuilding. A merge into `main` waits for approval, checks that `main` holds exactly the tested dev commit's files, and deploys that commit's image by digest to the `prod` namespace (rehearsed once, 13 Nov 2026). GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
 
 ---
 
