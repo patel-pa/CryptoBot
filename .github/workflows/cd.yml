@@ -48,7 +48,11 @@ env:
 
 jobs:
   image:
-    name: Test, build, scan, push
+    # "Test, build, scan, push" is a check the ruleset on main requires. A run that skips this
+    # job still reports it, and GitHub counts a skipped job as passed: under that name, a run
+    # started by hand (e.g. a rollback after a failed build) would let the untested commit into
+    # main. So only a run that builds uses the name; the condition is the `if:` below.
+    name: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/dev') && 'Test, build, scan, push' || 'No image built (only a push to dev builds one)' }}
     # Only for pushes to dev. Started by hand: deploy only. On main: the image already exists.
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-24.04
