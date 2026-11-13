@@ -7,7 +7,7 @@
 # --- Web API ---
 fastapi==0.162.0
 uvicorn==0.54.0
-websockets==16.0
+websockets==17.4
 prometheus-client==0.26.0    # /metrics for Prometheus (Task 9); no dependencies of its own
 
 # --- Databases ---
