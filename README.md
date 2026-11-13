@@ -76,7 +76,7 @@ k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (
 infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/, envs/dev/ and envs/prod/ (destroyed after every session; prod leaves a final snapshot and is restored from it); modules/environment/ = the databases, secrets and roles of one environment, shared by envs/dev and envs/prod
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
-.github/            # actions/test-build-scan: tests, image, Trivy scan (used by CI and CD); workflows/: CI (ci.yml, terraform.yml), CD (cd.yml): every push to dev → tests, image, Trivy scan, push to ECR, deploy to dev; every merge of dev into main → approval → the same image to prod (by digest); deploys skip while no cluster runs; by hand: deploy or roll back
+.github/            # actions/test-build-scan: tests, image, Trivy scan (used by CI and CD); workflows/: CI (ci.yml, terraform.yml), CD (cd.yml): every push to dev → tests, image, Trivy scan, push to ECR, deploy to dev; every merge of dev into main → approval → the same image to prod (by digest); deploys skip while no cluster runs; by hand: deploy or roll back; rulesets/: what GitHub refuses on main, dev and the v1 tag
 docker-compose.yml  # full stack: postgres, mongo, init, historical, streamer, api, dashboard
 ```
 
@@ -236,11 +236,29 @@ A workflow that names an environment that does not exist yet makes GitHub create
 
 - **Required reviewers:** you. Leave "Prevent self-review" off: you approve your own merges.
 - **Deployment branches and tags:** "Selected branches and tags" → add the branch `main`. This is the lock that matters: the AWS role `cryptobot-github-deploy-prod` trusts every job in this environment (bootstrap README).
-- Recommended (Settings → Rules → Rulesets, target `main`): require a pull request, block force pushes and deletion.
+### Rulesets on `main`, `dev` and the v1 tag
+
+Three rulesets (Settings → Rules → Rulesets), kept as files in `.github/rulesets/` and created from them with `gh api` (below). Nobody may bypass them, the repository owner included.
+
+| File | Applies to | GitHub refuses |
+|---|---|---|
+| `main.json` | branch `main` | any change that is not a merged pull request; a squash or rebase merge (prod deploys only merge commits); a merge before the checks `Render, validate, scan the configuration`, `Lint the workflows` (CI), `Test, build, scan, push` (CD) and `Terraform checks passed` are green on the pull request's newest commit, reported by GitHub Actions; a force push; deleting the branch |
+| `dev.json` | branch `dev` | a force push; deleting the branch (direct pushes stay allowed) |
+| `v1-tag.json` | tag `v1.0-data-engineering` | moving or deleting the tag |
+
+A merge needs no approval (GitHub never lets the author approve their own pull request): the human check is the approval in `production`. The pull request need not be up to date with `main` (`dev` never contains main's merge commits): the prod job checks that the merged files are exactly the tested ones.
+
+```bash
+gh api --method POST repos/{owner}/{repo}/rulesets --input .github/rulesets/main.json
+gh api --method POST repos/{owner}/{repo}/rulesets --input .github/rulesets/dev.json
+gh api --method POST repos/{owner}/{repo}/rulesets --input .github/rulesets/v1-tag.json
+# After editing a file: its id from `gh api repos/{owner}/{repo}/rulesets`, then
+gh api --method PUT repos/{owner}/{repo}/rulesets/<id> --input .github/rulesets/main.json
+```
 
 ### With CD (the normal way)
 
-1. Open a pull request from `dev` to `main`, wait until the CD run of that dev commit is green (the pull request shows it as a check: only then is its image in ECR), and merge it with **"Create a merge commit"** (not squash, not rebase): the merge's second parent is the tested dev commit, which is how the job finds its image.
+1. Open a pull request from `dev` to `main`. GitHub lets you merge it only once the four required checks of that dev commit are green (CD's among them: only the run of a push to dev reports it, after building, testing and scanning the image, so its image is in ECR), and only with **"Create a merge commit"**: the merge's second parent is the tested dev commit, which is how the job finds its image.
 2. The push to `main` starts `cd.yml`; its job "Deploy to prod" waits for you: Actions → that run → **Review deployments** → `production` → **Approve and deploy**.
 3. The job then checks that the commit is a merge on `main` whose files are exactly those of the merged dev commit (a change made directly on `main`, or inside the merge, was never tested: the job stops), finds that dev commit's image in ECR, gives it the second tag `prod-<main SHA>` (ECR keeps the newest 10 of those whatever dev does), and deploys it to `prod` **by digest**. Without a running cluster it tags the image and skips the deploy (green); a cluster without `envs/prod` makes it fail.
 
@@ -283,7 +301,7 @@ Then destroy `envs/prod` in its two steps (its README). Its **final snapshots st
 | Layer | What protects it |
 |---|---|
 | Code and dependencies | Pinned: the app's direct Python dependencies, the base image (by digest), the actions (by commit SHA) and the tools CI adds (by image digest or checksum; the runner's own AWS CLI and jq excepted). Dependabot opens weekly update pull requests into `dev`; Dependabot alerts report known vulnerabilities. GitHub secret scanning with push protection blocks pushes that contain keys. No password defaults in code, and passwords never appear in logs (`repr=False`). |
-| CI/CD | Every image is scanned by Trivy before it may reach ECR (any CRITICAL vulnerability stops it; fixable HIGH ones are listed in the log). Trivy also scans the Terraform code and the dev and prod manifests for misconfigurations: the accepted findings are listed with their reasons in `.trivyignore.yaml`, any other CRITICAL one fails CI. actionlint and zizmor check the workflows. GitHub signs in to AWS with OIDC (no stored keys), one role per job, and the AWS account ID exists only as a repository secret. Prod deploys need approval in the GitHub environment `production`. |
+| CI/CD | Every image is scanned by Trivy before it may reach ECR (any CRITICAL vulnerability stops it; fixable HIGH ones are listed in the log). Trivy also scans the Terraform code and the dev and prod manifests for misconfigurations: the accepted findings are listed with their reasons in `.trivyignore.yaml`, any other CRITICAL one fails CI. actionlint and zizmor check the workflows. GitHub signs in to AWS with OIDC (no stored keys), one role per job, and the AWS account ID exists only as a repository secret. Prod deploys need approval in the GitHub environment `production`. Rulesets that nobody may bypass (`.github/rulesets/`): `main` changes only through a pull request whose four required checks are green, merged as a merge commit; no force push or deletion on `main` and `dev`; the tag `v1.0-data-engineering` can't be moved or deleted. |
 | Container image | Slim Debian base, pinned by digest; no setuptools or wheel at runtime; the AWS database CA bundle pinned by checksum. The app runs as the non-root user `10001` and cannot change its own code. |
 | Kubernetes | Every app pod: `runAsNonRoot`, read-only root file system, no privilege escalation, all Linux capabilities dropped, the default seccomp profile, no service account token (the app never calls the Kubernetes API). The CI deploy roles may change only their own namespace and cannot create or change SecretStores (`infra/terraform/platform/README.md`, "Who may do what in the cluster"). |
 | AWS | One IAM role per ServiceAccount through EKS Pod Identity (API reads the model, retrain writes it, External Secrets reads its own environment's secrets: dev can never read prod's). Databases in private subnets, reachable only from the nodes, with TLS. Passwords are generated by Terraform and written straight to Secrets Manager, never into the Terraform state. |

@@ -8,8 +8,9 @@
 # - workflows: the workflow files themselves (actionlint, zizmor) and the pins kept twice.
 # Terraform's own checks (fmt, validate, tests) are in terraform.yml. Not on main: main only
 # receives merges whose files are those of a dev commit these checks already ran on (cd.yml
-# refuses anything else); merge only when they passed. No pull_request trigger: a pull request
-# shows its newest commit's checks.
+# refuses anything else), and the ruleset on main (.github/rulesets/main.json) allows a merge
+# only once config and workflows passed. No pull_request trigger: a pull request shows its
+# newest commit's checks.
 
 name: CI
 
