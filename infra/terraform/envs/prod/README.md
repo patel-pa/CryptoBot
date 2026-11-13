@@ -17,7 +17,7 @@ layer's bucket under `envs/prod/`.
 | Deletion protection | off | **on**; teardown in two steps |
 | On destroy | everything is gone | **final snapshot** of each database |
 | On create | empty | **restored from the newest final snapshot**; only the very first create starts empty |
-| Secrets | `cryptobot/dev/*` | `cryptobot/prod/*` (new passwords at every create, also after a restore) |
+| Secrets | `cryptobot/dev/*` | `cryptobot/prod/*` (new passwords at every create; after a restore, DocumentDB takes its new one only in the second apply, below) |
 | External Secrets role | `cryptobot-dev-external-secrets` | `cryptobot-prod-external-secrets` (reads only `cryptobot/prod/*`) |
 | Pod roles | `dev/*` in the model bucket | `cryptobot-prod-api` (reads), `cryptobot-prod-retrain` (writes) `prod/*` |
 
@@ -57,6 +57,16 @@ terraform apply tfplan                         # ~15-25 min (a restore is slower
 # start EMPTY (see "When something goes wrong")
 # ONLY the very first time (no final snapshot exists yet; the plan stops with
 # "Your query returned no results" otherwise): terraform plan -var first_create=true -out=tfplan
+
+# after a restore, plan and apply ONCE MORE before deploying: a restored DocumentDB keeps the
+# snapshot's old password, and this apply sends it the new one (module README, "The password
+# after a restore"). The plan must show exactly "1 to change": master_password_wo_version
+# 2 × password_version -> 2 × password_version + 1 (2 -> 3 while password_version = 1) on
+# module.environment.aws_docdb_cluster.mongo, and the output snapshots.restore_from changing
+# to null. (After the very first create it shows "No changes".) If it also creates the
+# DocumentDB instance (the restore apply failed before it), see "When something goes wrong".
+terraform plan -out=tfplan                     # have it reviewed before applying
+terraform apply tfplan
 
 # deploy the app (README in the repository root: "Deploy to prod on EKS") ... work ...
 
@@ -117,9 +127,10 @@ Remove-Item Env:TF_VAR_restore_snapshots       # the next plan uses the newest a
 | What you see | Why | What to do |
 |---|---|---|
 | plan stops: `Your query returned no results` | no final snapshot of that database exists | the very first create: `-var first_create=true`. Otherwise check the list above and name the snapshot (`restore_snapshots`) |
-| plan stops: `reading RDS DB Snapshots: ... DBInstanceNotFound` or `reading RDS DB Cluster Snapshots: ... DBClusterNotFoundFault` | AWS refuses to list the snapshots of a database that no longer exists by its name (its API documents that; first proven or disproven in the rehearsal) | name the newest snapshot of each database from the list above (`restore_snapshots`) |
-| the same, in the very first session, while prod **runs** (e.g. teardown step 1) | the "does it exist?" lookup did not see the running database (expected not to happen; the DocumentDB one is first proven in the rehearsal) | add `-var first_create=true` to that command too: it only skips the snapshot lookup, a running database is not changed |
-| a plan wants to **replace** a prod database (`-/+`, `must be replaced`, often after `tainted`) | a create or restore failed half-way (e.g. a timeout, or the follow-up call that sets the password, backup days and version was refused); Terraform then marks the database as broken | **never apply it**: the new database would start EMPTY. Run `terraform untaint module.environment.aws_db_instance.postgres` (or `module.environment.aws_docdb_cluster.mongo`) and plan again; if the password may not have been set, raise `password_version` in `main.tf` |
+| plan stops: `reading RDS DB Snapshots: ... DBInstanceNotFound` or `reading RDS DB Cluster Snapshots: ... DBClusterNotFoundFault` | AWS refused to list the snapshots of a database that no longer exists by its name (its API documentation allows that). **Not seen:** the rehearsal on 13 Nov 2026 proved that both lookups list a deleted database's snapshots by its name | name the newest snapshot of each database from the list above (`restore_snapshots`) |
+| the same, in the very first session, while prod **runs** (e.g. teardown step 1) | the "does it exist?" lookup did not see the running database. **Not seen:** proven for both databases in the rehearsal on 13 Nov 2026 (a plain plan of the running prod showed "No changes") | add `-var first_create=true` to that command too: it only skips the snapshot lookup, a running database is not changed |
+| after a restore and a deploy: `init-db` fails, the streamer restarts again and again, the API is not Ready; the logs show `Authentication failed` for MongoDB (PostgreSQL works) | the second apply after the restore was skipped: the restored DocumentDB still has the snapshot's old password | plan and apply once more (exactly "1 to change", see "One work session"), then deploy again (`gh workflow run cd.yml --ref main`, with approval). The Kubernetes Secrets already hold the right password (the secret did not change), so no sync is needed; a pod that is still not Ready: `kubectl -n prod rollout restart deployment`. **But** if that plan shows "No changes", or it also creates the DocumentDB instance (`aws_docdb_cluster_instance.mongo[0]`, after a restore apply that failed before it), the password is sent again before the instance exists and is lost the same way: after that apply, raise `password_version` in `main.tf`, plan and apply, then force the sync and restart the pods (commands in `k8s/overlays/prod/external-secrets.yaml`: the secret changes this time) |
+| a plan wants to **replace** a prod database (`-/+`, `must be replaced`, often after `tainted`) | a create or restore failed half-way (e.g. a timeout, or the follow-up call that sets the password, backup days and version was refused); Terraform then marks the database as broken | **never apply it**: the new database would start EMPTY. Run `terraform untaint module.environment.aws_db_instance.postgres` (or `module.environment.aws_docdb_cluster.mongo`) and plan again; if the password may not have been set (always so for a DocumentDB restore that failed before its instance existed: row above), raise `password_version` in `main.tf` once both databases run |
 | destroy stops: `final_snapshot_identifier is required when skip_final_snapshot is false`, `DocumentDB Cluster FinalSnapshotIdentifier is required when a final snapshot is required` or `Cannot delete protected DB Instance` / `DB Cluster` | teardown step 1 was skipped | run step 1 (if its plan replaces a database, see the row above), then destroy again; nothing is lost (some small parts, e.g. roles, may already be gone: step 1 re-creates them) |
 | destroy stops: snapshot `already exists` | a final snapshot name from an earlier step 1 was used before | run step 1 again (a new plan, a new name), then destroy |
 

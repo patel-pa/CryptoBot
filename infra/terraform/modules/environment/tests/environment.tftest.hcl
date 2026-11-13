@@ -182,14 +182,15 @@ run "passwords_never_reach_the_state" {
 
   # (Write-only arguments always read as null, so only the plain arguments and the
   # versions are checked; removing a write-only argument fails validation anyway.)
+  # DocumentDB's version is 2 × password_version + 1 here: dev never restores (databases.tf).
   assert {
     condition = (
       aws_db_instance.postgres.password == null &&
       aws_db_instance.postgres.password_wo_version == 1 &&
       aws_docdb_cluster.mongo.master_password == null &&
-      aws_docdb_cluster.mongo.master_password_wo_version == 1
+      aws_docdb_cluster.mongo.master_password_wo_version == 3
     )
-    error_message = "The databases must get their passwords only through write-only arguments."
+    error_message = "The databases must get their passwords only through write-only arguments (dev's DocumentDB: version 2 × 1 + 1)."
   }
 
   assert {
@@ -464,10 +465,10 @@ run "every_name_path_condition_and_setting_follows_the_inputs" {
   assert {
     condition = (
       aws_db_instance.postgres.password_wo_version == 2 &&
-      aws_docdb_cluster.mongo.master_password_wo_version == 2 &&
+      aws_docdb_cluster.mongo.master_password_wo_version == 5 &&
       alltrue([for version in aws_secretsmanager_secret_version.credentials : version.secret_string_wo_version == 2])
     )
-    error_message = "Raising password_version must give both secrets and both databases new passwords."
+    error_message = "password_version must reach both secrets and both databases (DocumentDB, not restored here: 2 × 2 + 1)."
   }
 
   assert {
@@ -555,6 +556,13 @@ run "dev_keeps_nothing_and_never_looks_for_snapshots" {
       output.snapshots.restore_from[db] == null && output.snapshots.final_on_destroy[db] == null
     ])
     error_message = "Dev starts empty and leaves no snapshot behind."
+  }
+
+  # This run plans on the state of the apply run above (dev "running"): the same number as
+  # at its create, so dev's DocumentDB never gets its password sent again.
+  assert {
+    condition     = aws_docdb_cluster.mongo.master_password_wo_version == 3
+    error_message = "Dev's DocumentDB password version must stay 2 × password_version + 1 while it runs (no resend)."
   }
 }
 
@@ -701,6 +709,11 @@ run "prod_first_create_starts_empty" {
     )
     error_message = "The very first create starts empty (no snapshot exists yet), but still keeps a final snapshot on destroy."
   }
+
+  assert {
+    condition     = aws_docdb_cluster.mongo.master_password_wo_version == 3
+    error_message = "The very first create sets DocumentDB's password in the create call: version 2 × 1 + 1 at once, so the next plan has nothing to send again."
+  }
 }
 
 run "a_named_snapshot_wins_over_the_newest" {
@@ -736,6 +749,11 @@ run "a_named_snapshot_wins_over_the_newest" {
       aws_db_instance.postgres.snapshot_identifier == "cryptobot-prod-postgres-final-2026-11-20-1730"
     )
     error_message = "A snapshot named in restore_snapshots replaces the lookup for that database only."
+  }
+
+  assert {
+    condition     = aws_docdb_cluster.mongo.master_password_wo_version == 2
+    error_message = "A restore from a named snapshot is a restore too: DocumentDB's password version must be 2 × password_version (sent again in the next apply)."
   }
 }
 
@@ -863,6 +881,151 @@ run "a_newer_snapshot_never_replaces_running_prod" {
   }
 }
 
+# The password after a restore (databases.tf, DocumentDB's password version), in one state:
+# a (mock) restore, the plan after it, and a rotation. A restored DocumentDB keeps the
+# snapshot's password, so the next apply must send it the password again, and change nothing
+# else.
+run "a_restore_gives_documentdb_password_version_2" {
+  command   = apply
+  state_key = "prod-restore"
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = true
+  }
+
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = [] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = [] }
+  }
+
+  override_data {
+    target = data.aws_db_snapshot.postgres[0]
+    values = { id = "cryptobot-prod-postgres-final-2026-11-20-1730" }
+  }
+
+  override_data {
+    target = data.aws_db_cluster_snapshot.mongo[0]
+    values = { id = "cryptobot-prod-mongo-final-2026-11-20-1730" }
+  }
+
+  override_resource {
+    target = aws_iam_role.pod["api"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-prod-api" }
+  }
+
+  override_resource {
+    target = aws_iam_role.pod["retrain"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-prod-retrain" }
+  }
+
+  assert {
+    condition = (
+      aws_docdb_cluster.mongo.snapshot_identifier == "cryptobot-prod-mongo-final-2026-11-20-1730" &&
+      aws_docdb_cluster.mongo.master_password_wo_version == 2 &&
+      aws_db_instance.postgres.snapshot_identifier == "cryptobot-prod-postgres-final-2026-11-20-1730" &&
+      aws_db_instance.postgres.password_wo_version == 1 &&
+      alltrue([for version in aws_secretsmanager_secret_version.credentials : version.secret_string_wo_version == 1])
+    )
+    error_message = "The run that restores DocumentDB must give it 2 × password_version (the next run's + 1 sends the password again); PostgreSQL and the secrets keep password_version."
+  }
+}
+
+run "the_plan_after_a_restore_sends_only_documentdb_its_password_again" {
+  command   = plan
+  state_key = "prod-restore"
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = true
+  }
+
+  # Both databases exist now.
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = ["cryptobot-prod-postgres"] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = ["cryptobot-prod-mongo"] }
+  }
+
+  override_resource {
+    target = aws_iam_role.pod["api"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-prod-api" }
+  }
+
+  override_resource {
+    target = aws_iam_role.pod["retrain"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-prod-retrain" }
+  }
+
+  assert {
+    condition = (
+      aws_docdb_cluster.mongo.master_password_wo_version == 3 &&
+      aws_db_instance.postgres.password_wo_version == 1 &&
+      alltrue([for version in aws_secretsmanager_secret_version.credentials : version.secret_string_wo_version == 1]) &&
+      aws_docdb_cluster.mongo.snapshot_identifier == "cryptobot-prod-mongo-final-2026-11-20-1730" &&
+      aws_db_instance.postgres.snapshot_identifier == "cryptobot-prod-postgres-final-2026-11-20-1730"
+    )
+    error_message = "After a restore, only DocumentDB's password version may change (2 -> 3: the same password, sent again); PostgreSQL's, the secrets' and the snapshots stay."
+  }
+
+  assert {
+    condition     = output.snapshots.restore_from == { postgres = null, mongo = null }
+    error_message = "Once the databases exist, restore_from is null (an output-only change, saved by the next apply)."
+  }
+}
+
+run "raising_password_version_still_rotates_both_databases" {
+  command   = plan
+  state_key = "prod-restore"
+
+  variables {
+    env                 = "prod"
+    keep_data           = true
+    deletion_protection = true
+    password_version    = 2
+  }
+
+  override_data {
+    target = data.aws_db_instances.postgres[0]
+    values = { instance_identifiers = ["cryptobot-prod-postgres"] }
+  }
+
+  override_data {
+    target = data.aws_rds_clusters.mongo[0]
+    values = { cluster_identifiers = ["cryptobot-prod-mongo"] }
+  }
+
+  override_resource {
+    target = aws_iam_role.pod["api"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-prod-api" }
+  }
+
+  override_resource {
+    target = aws_iam_role.pod["retrain"]
+    values = { arn = "arn:aws:iam::123456789012:role/cryptobot-prod-retrain" }
+  }
+
+  assert {
+    condition = (
+      aws_db_instance.postgres.password_wo_version == 2 &&
+      aws_docdb_cluster.mongo.master_password_wo_version == 5 &&
+      alltrue([for version in aws_secretsmanager_secret_version.credentials : version.secret_string_wo_version == 2])
+    )
+    error_message = "Raising password_version must give both secrets and both databases new passwords (DocumentDB: 2 × 2 + 1)."
+  }
+}
+
 # After a create that failed half-way, one database exists and the other does not: only the
 # missing one may be restored, from its own snapshot (both directions).
 run "only_the_missing_database_is_restored_postgres_exists" {
@@ -895,9 +1058,10 @@ run "only_the_missing_database_is_restored_postgres_exists" {
       length(data.aws_db_snapshot.postgres) == 0 &&
       length(data.aws_db_cluster_snapshot.mongo) == 1 &&
       output.snapshots.restore_from.postgres == null &&
-      output.snapshots.restore_from.mongo == "cryptobot-prod-mongo-final-2026-11-20-1730"
+      output.snapshots.restore_from.mongo == "cryptobot-prod-mongo-final-2026-11-20-1730" &&
+      aws_docdb_cluster.mongo.master_password_wo_version == 2
     )
-    error_message = "With PostgreSQL running and DocumentDB missing, only DocumentDB is restored, from its own snapshot."
+    error_message = "With PostgreSQL running and DocumentDB missing, only DocumentDB is restored, from its own snapshot (and its password version follows its own restore: 2)."
   }
 }
 
@@ -931,9 +1095,10 @@ run "only_the_missing_database_is_restored_mongo_exists" {
       length(data.aws_db_snapshot.postgres) == 1 &&
       length(data.aws_db_cluster_snapshot.mongo) == 0 &&
       output.snapshots.restore_from.postgres == "cryptobot-prod-postgres-final-2026-11-20-1730" &&
-      output.snapshots.restore_from.mongo == null
+      output.snapshots.restore_from.mongo == null &&
+      aws_docdb_cluster.mongo.master_password_wo_version == 3
     )
-    error_message = "With DocumentDB running and PostgreSQL missing, only PostgreSQL is restored, from its own snapshot."
+    error_message = "With DocumentDB running and PostgreSQL missing, only PostgreSQL is restored, from its own snapshot (DocumentDB's password version stays 3: a PostgreSQL restore is not its own)."
   }
 }
 

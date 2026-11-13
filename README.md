@@ -6,7 +6,7 @@ An end-to-end data engineering platform that ingests Binance BTC/USDT market dat
 
 ## v2 in progress
 
-Version 2 moves the platform to AWS: Amazon EKS, Amazon RDS for PostgreSQL and Amazon DocumentDB, all infrastructure built by Terraform, delivery by GitHub Actions. The dev path (push to `dev` → tests → vulnerability scan → deploy to EKS) has run end to end on AWS; the prod path (merge into `main` → approval → the same image, by digest) is written and its first rehearsal is pending. The AWS environments exist only during work sessions: Terraform creates and destroys them to keep the cost low. Monitoring, alerting and the disaster-recovery documentation are still to come. The finished Data Engineering version (v1) is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
+Version 2 moves the platform to AWS: Amazon EKS, Amazon RDS for PostgreSQL and Amazon DocumentDB, all infrastructure built by Terraform, delivery by GitHub Actions. The dev path (push to `dev` → tests → vulnerability scan → deploy to EKS) has run end to end on AWS; the prod path (merge into `main` → approval → the same image, by digest) was rehearsed once on AWS on 13 Nov 2026, including the teardown with final snapshots and the restore from them. The AWS environments exist only during work sessions: Terraform creates and destroys them to keep the cost low. Monitoring, alerting and the disaster-recovery documentation are still to come. The finished Data Engineering version (v1) is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
 
 ---
 
@@ -41,7 +41,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 **Dashboard:** Streamlit + Plotly
 **ML:** scikit-learn, pandas, joblib
 **Scheduling:** two commands, `python -m src.cli ingest` and `retrain`, run as Kubernetes CronJobs in v2 (run on EKS dev); v1.0 used Apache Airflow
-**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS, GitHub Actions (CI: flake8 + pytest + image build; CD: tests, Trivy scan, push to Amazon ECR via OIDC, deploy to the dev namespace on EKS; merges into `main` go to the prod namespace after approval, with the same image by digest (first rehearsal pending); manual deploy or rollback by SHA)
+**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS, GitHub Actions (CI: ruff + pytest, image build + Trivy scan, Kubernetes manifest validation, Terraform tests, workflow linting; CD: tests, Trivy scan, push to Amazon ECR via OIDC, deploy to the dev namespace on EKS; merges into `main` go to the prod namespace after approval, with the same image by digest (rehearsed once, 13 Nov 2026); manual deploy or rollback by SHA)
 **Testing:** pytest
 
 ---
@@ -54,8 +54,8 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 - **Scheduled jobs** — two commands keep the system current: `python -m src.cli ingest` re-runs the idempotent collector, and `python -m src.cli retrain` catches the data up and retrains the model. On Kubernetes they run as CronJobs, every 15 minutes and daily (proven on EKS dev); in docker compose, `historical` runs `ingest` on every `up` and `retrain` is run by hand. The API picks up a newer model by itself (S3 on AWS, a local file in docker compose), no restart needed. Each command's exit code tells the scheduler whether it failed.
 - **Verified data quality** — **~240,000+** one-minute BTC/USDT candles loaded with **0 gaps** (and growing with every ingest run), confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
 - **Predicted-vs-actual tracking** — every `/predict` call is persisted, so `/predictions` can join each forecast against the candle's real close for later evaluation.
-- **CI on every push** — GitHub Actions runs flake8 (fails on syntax/undefined-name errors), the pytest suite, and a Docker image build.
-- **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA, then deployed to the `dev` namespace on EKS (skipped while no cluster runs); started by hand, it deploys or rolls back to any image already in ECR without rebuilding. A merge into `main` waits for approval, checks that `main` holds exactly the tested dev commit's files, and deploys that commit's image by digest to the `prod` namespace (written; first rehearsal pending). GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
+- **CI on every push** (every branch except `main`) — GitHub Actions runs every check that needs no AWS: ruff and the pytest suite, the image build and its Trivy scan (the same steps CD runs, so on `dev` only CD runs them), the three Kustomize overlays rendered and validated against the Kubernetes 1.37 API (kubeconform, strict), a Trivy misconfiguration scan of the Terraform code and the dev/prod manifests (fails on CRITICAL; the accepted findings are listed with their reasons in `.trivyignore.yaml`), and actionlint + zizmor on the workflows. Each Terraform folder gets `fmt -check`, `validate` and its mock-provider tests.
+- **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA, then deployed to the `dev` namespace on EKS (skipped while no cluster runs); started by hand, it deploys or rolls back to any image already in ECR without rebuilding. A merge into `main` waits for approval, checks that `main` holds exactly the tested dev commit's files, and deploys that commit's image by digest to the `prod` namespace (rehearsed once, 13 Nov 2026). GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
 
 ---
 
@@ -76,7 +76,7 @@ k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (
 infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/, envs/dev/ and envs/prod/ (destroyed after every session; prod leaves a final snapshot and is restored from it); modules/environment/ = the databases, secrets and roles of one environment, shared by envs/dev and envs/prod
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
-.github/workflows/  # CI (python-app.yml); CD (cd.yml): every push to dev → tests, image, Trivy scan, push to ECR, deploy to dev; every merge of dev into main → approval → the same image to prod (by digest); deploys skip while no cluster runs; by hand: deploy or roll back
+.github/            # actions/test-build-scan: tests, image, Trivy scan (used by CI and CD); workflows/: CI (ci.yml, terraform.yml), CD (cd.yml): every push to dev → tests, image, Trivy scan, push to ECR, deploy to dev; every merge of dev into main → approval → the same image to prod (by digest); deploys skip while no cluster runs; by hand: deploy or roll back; rulesets/: what GitHub refuses on main, dev and the v1 tag
 docker-compose.yml  # full stack: postgres, mongo, init, historical, streamer, api, dashboard
 ```
 
@@ -228,7 +228,7 @@ Then destroy `envs/dev`, and `platform` once `envs/dev` and `envs/prod` (whichev
 
 ## Deploy to prod on EKS
 
-The same app in the `prod` namespace of the same cluster: `k8s/overlays/prod` is the dev overlay with prod's values (secrets `cryptobot/prod/*`, model `prod/model.pkl`, its own ALB `cryptobot-prod`, two API pods, the history since 1 Oct 2026). Needs the Terraform layers `platform` and then `envs/prod` applied (its README: the very first create, the restore from the newest final snapshot, the teardown in two steps). Prod is deployed only from `main`, after your approval, with the image that was built, tested and scanned on `dev`: nothing is built for prod.
+The same app in the `prod` namespace of the same cluster: `k8s/overlays/prod` is the dev overlay with prod's values (secrets `cryptobot/prod/*`, model `prod/model.pkl`, its own ALB `cryptobot-prod`, two API pods, the history since 1 Oct 2026). Needs the Terraform layers `platform` and then `envs/prod` applied (its README: the very first create, the restore from the newest final snapshot, the teardown in two steps). **After a restore, plan and apply `envs/prod` once more before deploying:** that second apply gives the restored DocumentDB its new password (a restored DocumentDB keeps the snapshot's old one; the plan shows exactly one change). Prod is deployed only from `main`, after your approval, with the image that was built, tested and scanned on `dev`: nothing is built for prod.
 
 ### Once, before the first merge: the GitHub environment `production`
 
@@ -236,11 +236,29 @@ A workflow that names an environment that does not exist yet makes GitHub create
 
 - **Required reviewers:** you. Leave "Prevent self-review" off: you approve your own merges.
 - **Deployment branches and tags:** "Selected branches and tags" → add the branch `main`. This is the lock that matters: the AWS role `cryptobot-github-deploy-prod` trusts every job in this environment (bootstrap README).
-- Recommended (Settings → Rules → Rulesets, target `main`): require a pull request, block force pushes and deletion.
+### Rulesets on `main`, `dev` and the v1 tag
+
+Three rulesets (Settings → Rules → Rulesets), kept as files in `.github/rulesets/` and created from them with `gh api` (below). Nobody may bypass them, the repository owner included.
+
+| File | Applies to | GitHub refuses |
+|---|---|---|
+| `main.json` | branch `main` | any change that is not a merged pull request; a squash or rebase merge (prod deploys only merge commits); a merge before the checks `Render, validate, scan the configuration`, `Lint the workflows` (CI), `Test, build, scan, push` (CD) and `Terraform checks passed` are green on the pull request's newest commit, reported by GitHub Actions; a force push; deleting the branch |
+| `dev.json` | branch `dev` | a force push; deleting the branch (direct pushes stay allowed) |
+| `v1-tag.json` | tag `v1.0-data-engineering` | moving or deleting the tag |
+
+A merge needs no approval (GitHub never lets the author approve their own pull request): the human check is the approval in `production`. The pull request need not be up to date with `main` (`dev` never contains main's merge commits): the prod job checks that the merged files are exactly the tested ones.
+
+```bash
+gh api --method POST repos/{owner}/{repo}/rulesets --input .github/rulesets/main.json
+gh api --method POST repos/{owner}/{repo}/rulesets --input .github/rulesets/dev.json
+gh api --method POST repos/{owner}/{repo}/rulesets --input .github/rulesets/v1-tag.json
+# After editing a file: its id from `gh api repos/{owner}/{repo}/rulesets`, then
+gh api --method PUT repos/{owner}/{repo}/rulesets/<id> --input .github/rulesets/main.json
+```
 
 ### With CD (the normal way)
 
-1. Open a pull request from `dev` to `main`, wait until the CD run of that dev commit is green (the pull request shows it as a check: only then is its image in ECR), and merge it with **"Create a merge commit"** (not squash, not rebase): the merge's second parent is the tested dev commit, which is how the job finds its image.
+1. Open a pull request from `dev` to `main`. GitHub lets you merge it only once the four required checks of that dev commit are green (CD's among them: only the run of a push to dev reports it, after building, testing and scanning the image, so its image is in ECR), and only with **"Create a merge commit"**: the merge's second parent is the tested dev commit, which is how the job finds its image.
 2. The push to `main` starts `cd.yml`; its job "Deploy to prod" waits for you: Actions → that run → **Review deployments** → `production` → **Approve and deploy**.
 3. The job then checks that the commit is a merge on `main` whose files are exactly those of the merged dev commit (a change made directly on `main`, or inside the merge, was never tested: the job stops), finds that dev commit's image in ECR, gives it the second tag `prod-<main SHA>` (ECR keeps the newest 10 of those whatever dev does), and deploys it to `prod` **by digest**. Without a running cluster it tags the image and skips the deploy (green); a cluster without `envs/prod` makes it fail.
 
@@ -278,6 +296,18 @@ Then destroy `envs/prod` in its two steps (its README). Its **final snapshots st
 
 ---
 
+## Security
+
+| Layer | What protects it |
+|---|---|
+| Code and dependencies | Pinned: the app's direct Python dependencies, the base image (by digest), the actions (by commit SHA) and the tools CI adds (by image digest or checksum; the runner's own AWS CLI and jq excepted). Dependabot opens weekly update pull requests into `dev`; Dependabot alerts report known vulnerabilities. GitHub secret scanning with push protection blocks pushes that contain keys. No password defaults in code, and passwords never appear in logs (`repr=False`). |
+| CI/CD | Every image is scanned by Trivy before it may reach ECR (any CRITICAL vulnerability stops it; fixable HIGH ones are listed in the log). Trivy also scans the Terraform code and the dev and prod manifests for misconfigurations: the accepted findings are listed with their reasons in `.trivyignore.yaml`, any other CRITICAL one fails CI. actionlint and zizmor check the workflows. GitHub signs in to AWS with OIDC (no stored keys), one role per job, and the AWS account ID exists only as a repository secret. Prod deploys need approval in the GitHub environment `production`. Rulesets that nobody may bypass (`.github/rulesets/`): `main` changes only through a pull request whose four required checks are green, merged as a merge commit; no force push or deletion on `main` and `dev`; the tag `v1.0-data-engineering` can't be moved or deleted. |
+| Container image | Slim Debian base, pinned by digest; no setuptools or wheel at runtime; the AWS database CA bundle pinned by checksum. The app runs as the non-root user `10001` and cannot change its own code. |
+| Kubernetes | Every app pod: `runAsNonRoot`, read-only root file system, no privilege escalation, all Linux capabilities dropped, the default seccomp profile, no service account token (the app never calls the Kubernetes API). The CI deploy roles may change only their own namespace and cannot create or change SecretStores (`infra/terraform/platform/README.md`, "Who may do what in the cluster"). |
+| AWS | One IAM role per ServiceAccount through EKS Pod Identity (API reads the model, retrain writes it, External Secrets reads its own environment's secrets: dev can never read prod's). Databases in private subnets, reachable only from the nodes, with TLS. Passwords are generated by Terraform and written straight to Secrets Manager, never into the Terraform state. |
+
+---
+
 ## API endpoints
 
 | Endpoint | Type | Source | Purpose |
@@ -305,4 +335,4 @@ docker run --rm cryptobot-test        # ruff check . + pytest
 
 Without Docker (Python 3.11): `pip install -r requirements-docker.txt -r requirements-dev.txt`, then `ruff check .` and `pytest`.
 
-CI runs the same pytest suite plus flake8 linting (ruff replaces it in CI later) and a Docker image build on every push (see `.github/workflows/python-app.yml`).
+CI runs exactly these two commands, then builds the runtime image and scans it with Trivy (`.github/actions/test-build-scan`, used by `.github/workflows/ci.yml` and `cd.yml`).

@@ -13,12 +13,18 @@
 
 # Pinned by digest, so every build starts from exactly the same image: a tag such
 # as 3.11-slim moves whenever it is rebuilt. The tag says what the digest is.
-FROM python:3.11.18-slim-trixie@sha256:ffe4b0c76963e64f05484d74dbb3f67fad1effcf3c5c22c2235f0fafc8a9c98f AS base
+FROM python:3.11.18-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535 AS base
 
 # PYTHONUNBUFFERED → print() / logs appear immediately in `docker compose logs`.
 # PYTHONDONTWRITEBYTECODE → don't litter the image with .pyc files.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
+
+# The Python 3.11 image still ships setuptools and wheel (newer Python images no
+# longer do). Nothing here uses them, and setuptools carries its own old copies of
+# other packages with HIGH vulnerabilities (Trivy). pip installs the packages below
+# (all prebuilt wheels) without them.
+RUN pip uninstall --yes setuptools wheel
 
 WORKDIR /app
 

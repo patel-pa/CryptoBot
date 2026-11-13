@@ -1,0 +1,92 @@
+# Terraform: the offline checks of every Terraform folder, on every push to any branch except
+# main (like ci.yml). No AWS access and no state: `plan` and `apply` stay manual (each
+# folder's README).
+# - fmt -check: the files are formatted the way `terraform fmt` writes them
+# - init -backend=false + validate: providers and modules download, the configuration is
+#   valid; the S3 state backend is not touched
+# - test: the folder's tests/*.tftest.hcl, against mocked providers (no AWS calls)
+# No path filter, although most pushes change no Terraform file: the ruleset on main requires
+# the job "Terraform checks passed", and a workflow skipped by a path filter reports no check
+# at all, so the pull request would wait for it forever.
+
+name: Terraform
+
+on:
+  push:
+    branches-ignore: [main]
+
+concurrency:
+  group: terraform-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # The official container image, pinned by digest. Every folder accepts Terraform 1.17.
+  TERRAFORM_IMAGE: hashicorp/terraform:1.17.2@sha256:6e9c1e647c31a960dc9b59e13272f9111d90010c10b717f77ffb324767660475
+
+jobs:
+  check:
+    name: Terraform ${{ matrix.folder }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # One job per folder, all at the same time; a failing folder does not cancel the others.
+    strategy:
+      fail-fast: false
+      matrix:
+        folder: [bootstrap, platform, modules/environment, envs/dev, envs/prod]
+    env:
+      FOLDER: ${{ matrix.folder }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false        # later steps need no Git access
+
+      # A small `terraform` command that runs the pinned image in this folder. It mounts all
+      # of infra/terraform: envs/dev and envs/prod use ../../modules/environment.
+      - name: Set up terraform
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/terraform" <<'EOF'
+          #!/usr/bin/env bash
+          exec docker run --rm -e TF_IN_AUTOMATION=1 -e TF_INPUT=0 \
+            -v "$GITHUB_WORKSPACE/infra/terraform:/terraform" -w "/terraform/$FOLDER" \
+            "$TERRAFORM_IMAGE" "$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/bin/terraform"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"   # before any terraform on the runner
+          "$RUNNER_TEMP/bin/terraform" version
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive -diff
+
+      - name: terraform init -backend=false
+        run: terraform init -backend=false
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: terraform test
+        run: terraform test
+
+  # The one check the ruleset on main requires: one name for all folders, so a new folder needs
+  # no ruleset change. `always()`: it runs even when a folder failed or the run was cancelled.
+  # Without it, it would be skipped then, and a skipped job counts as passed for a required
+  # check: a failed folder would get through.
+  passed:
+    name: Terraform checks passed
+    needs: check
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Did every folder pass?
+        env:
+          RESULT: ${{ needs.check.result }}   # of all matrix jobs: success only if every one was
+        run: |
+          [[ "$RESULT" == success ]] || {
+            echo "::error::Not every Terraform folder passed ($RESULT): see the jobs above"
+            exit 1
+          }
+          echo "Every Terraform folder passed."

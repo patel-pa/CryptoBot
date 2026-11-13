@@ -1,0 +1,144 @@
+# CI: every check that needs no AWS, on every push to any branch except main.
+# - app: ruff + pytest, the runtime image and its Trivy scan (the shared steps in
+#   .github/actions/test-build-scan). Not on dev: there cd.yml's image job runs the same steps
+#   right before it pushes the image, so here they would only run twice.
+# - config: the three Kustomize overlays rendered with the deploy's kubectl and validated
+#   against the Kubernetes 1.37 API; Trivy scans them and the Terraform code for
+#   misconfigurations.
+# - workflows: the workflow files themselves (actionlint, zizmor) and the pins kept twice.
+# Terraform's own checks (fmt, validate, tests) are in terraform.yml. Not on main: main only
+# receives merges whose files are those of a dev commit these checks already ran on (cd.yml
+# refuses anything else), and the ruleset on main (.github/rulesets/main.json) allows a merge
+# only once config and workflows passed. No pull_request trigger: a pull request shows its
+# newest commit's checks.
+
+name: CI
+
+on:
+  push:
+    branches-ignore: [main]
+
+# A newer push to the same branch replaces a running check (nothing is deployed here).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Copies of pins kept elsewhere; the workflows job fails when a copy differs (a bump by hand
+  # must change both). The deploy jobs' kubectl (cd.yml): the manifests are rendered as deployed.
+  KUBECTL_VERSION: v1.37.2
+  KUBECTL_SHA256: c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
+  # The image scan's Trivy (.github/actions/test-build-scan).
+  TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+  # The other tools as container images pinned by digest: the same bytes on every run.
+  KUBECONFORM_IMAGE: ghcr.io/yannh/kubeconform:v0.8.0@sha256:faffaf43f95aa6425306e1ab8d6fcad72acb9049158f38e574c085ea1ec0f64e
+  ACTIONLINT_IMAGE: rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+  ZIZMOR_IMAGE: ghcr.io/zizmorcore/zizmor:1.32.0@sha256:3014cc8f68f663935f69b3c3e0e41f5ce102b268d97db13db0f62208747f860d
+  # The JSON schemas kubeconform checks against, each pinned to a commit: Kubernetes' own
+  # objects, and External Secrets' ExternalSecret (not part of Kubernetes).
+  K8S_SCHEMAS: https://raw.githubusercontent.com/yannh/kubernetes-json-schema/9e1cd3c3b22e6432cbc5615a5a930f8268f14bf1/{{.NormalizedKubernetesVersion}}-standalone{{.StrictSuffix}}/{{.ResourceKind}}{{.KindSuffix}}.json
+  CRD_SCHEMAS: https://raw.githubusercontent.com/datreeio/CRDs-catalog/89c736bdde38b5fecd0f8436ec5f3aa3679a3b86/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json
+
+jobs:
+  app:
+    name: Test, build, scan the image
+    if: github.ref != 'refs/heads/dev'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false        # later steps need no Git access
+
+      - name: Test, build and scan the image
+        uses: ./.github/actions/test-build-scan # zizmor: ignore[self-repository] actionlint cannot read $/ yet
+        with:
+          tag: ${{ github.sha }}
+
+  config:
+    name: Render, validate, scan the configuration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install kubectl ${{ env.KUBECTL_VERSION }}
+        run: |
+          curl -sSfL --retry 3 --max-time 120 -o "$RUNNER_TEMP/kubectl" \
+            "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl"
+          echo "$KUBECTL_SHA256  $RUNNER_TEMP/kubectl" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/bin"
+          install -m 0755 "$RUNNER_TEMP/kubectl" "$RUNNER_TEMP/bin/kubectl"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"   # before the runner's own kubectl
+          "$RUNNER_TEMP/bin/kubectl" version --client
+
+      - name: Render the overlays dev, prod and local
+        run: |
+          # local reads its passwords from two gitignored files; the examples' placeholder
+          # values are enough to render.
+          cp k8s/overlays/local/postgres.env.example k8s/overlays/local/postgres.env
+          cp k8s/overlays/local/mongo.env.example k8s/overlays/local/mongo.env
+          mkdir -p "$RUNNER_TEMP/manifests"
+          for overlay in dev prod local; do
+            kubectl kustomize "k8s/overlays/$overlay" > "$RUNNER_TEMP/manifests/$overlay.yaml"
+            echo "$overlay: $(grep -c '^kind:' "$RUNNER_TEMP/manifests/$overlay.yaml") objects"
+          done
+
+      # -strict: an unknown field (a typo such as `replica:`) is an error instead of being
+      # dropped silently. Between AWS sessions this is the only check the manifests get.
+      - name: Validate them against the Kubernetes 1.37 API (kubeconform)
+        run: |
+          docker run --rm -v "$RUNNER_TEMP/manifests:/manifests:ro" "$KUBECONFORM_IMAGE" \
+            -strict -summary -kubernetes-version 1.37.0 \
+            -schema-location "$K8S_SCHEMAS" -schema-location "$CRD_SCHEMAS" \
+            /manifests/dev.yaml /manifests/prod.yaml /manifests/local.yaml
+
+      # Fails on any CRITICAL finding that .trivyignore.yaml does not list as accepted. local
+      # is left out: its in-cluster databases exist only in kind, never on AWS.
+      - name: Scan Terraform and the dev and prod manifests for misconfigurations (Trivy)
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/infra/terraform:/scan/terraform:ro" \
+            -v "$RUNNER_TEMP/manifests/dev.yaml:/scan/k8s/dev.yaml:ro" \
+            -v "$RUNNER_TEMP/manifests/prod.yaml:/scan/k8s/prod.yaml:ro" \
+            -v "$GITHUB_WORKSPACE/.trivyignore.yaml:/trivyignore.yaml:ro" \
+            "$TRIVY_IMAGE" config /scan --severity CRITICAL --exit-code 1 \
+            --ignorefile /trivyignore.yaml --disable-telemetry --skip-version-check
+
+  workflows:
+    name: Lint the workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: actionlint (syntax, expressions, the shell scripts)
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -w /repo "$ACTIONLINT_IMAGE" -no-color
+
+      # Offline: no token is handed to the tool.
+      - name: zizmor (security of everything under .github)
+        run: docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -w /repo "$ZIZMOR_IMAGE" --offline .github
+
+      # Dependabot does not update pins kept in `env:`, so these copies are bumped by hand.
+      - name: The pins kept twice are the same
+        run: |
+          same() {    # same NAME FILE1 FILE2: the line "NAME: value" has the same value in both
+            local a b
+            a=$(grep -E "^ +$1: " "$2" | sed -E "s/^ +$1: //" || true)
+            b=$(grep -E "^ +$1: " "$3" | sed -E "s/^ +$1: //" || true)
+            [[ -n "$a" && "$a" == "$b" ]] || {
+              echo "::error::$1 differs between $2 ($a) and $3 ($b)"
+              return 1
+            }
+          }
+          same KUBECTL_VERSION .github/workflows/ci.yml .github/workflows/cd.yml
+          same KUBECTL_SHA256 .github/workflows/ci.yml .github/workflows/cd.yml
+          same TRIVY_IMAGE .github/workflows/ci.yml .github/actions/test-build-scan/action.yml
+          echo "kubectl and Trivy pins match."

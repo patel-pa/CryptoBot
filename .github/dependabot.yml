@@ -1,0 +1,67 @@
+# Dependabot: weekly pull requests that update the pinned versions, into dev like all other
+# work (main only receives merges of tested dev commits). GitHub reads this file from the
+# default branch, so it takes effect once it has been merged into main.
+# Dependabot security updates stay off (repository settings): GitHub always opens those
+# against the default branch, past dev. Dependabot alerts report a vulnerable package at once;
+# the first weekly run after the fixed release has passed its cooldown (below) updates it (a
+# run started by hand waits for the cooldown too: Insights → Dependency graph → Dependabot →
+# Check for updates).
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directory: /                        # requirements-docker.txt (app), requirements-dev.txt (ruff, pytest)
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    # Only releases at least a week old: a broken or hijacked release is usually withdrawn by then.
+    cooldown:
+      default-days: 7
+    groups:
+      # One pull request for all minor and patch updates; every major update gets its own.
+      python-packages:
+        update-types: [minor, patch]
+        # Its own pull request too: a model file saved with one scikit-learn version is not
+        # guaranteed to load in another, so after deploying it, retrain the model once.
+        exclude-patterns: [scikit-learn]
+    commit-message:
+      prefix: chore
+
+  - package-ecosystem: docker
+    directory: /                        # the Dockerfile's Python base image (tag and digest)
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    # Shorter than for packages: a new digest of the same tag usually brings Debian security fixes.
+    cooldown:
+      default-days: 3
+    ignore:
+      # Stay on Python 3.11, the project's version: patch releases and new digests still come.
+      - dependency-name: python
+        update-types: [version-update:semver-major, version-update:semver-minor]
+    commit-message:
+      prefix: chore
+
+  - package-ecosystem: github-actions
+    # .github/workflows (actions pinned by commit SHA; the comment names the version).
+    # .github/actions/test-build-scan uses no actions: add its folder here if it ever does.
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Berlin
+    cooldown:
+      default-days: 7
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci

@@ -39,11 +39,7 @@ permissions:
 env:
   AWS_REGION: eu-central-1
   ECR_REPOSITORY: cryptobot
-  # Trivy as a container image pinned by digest; its signature was checked with cosign
-  # (signed by Aqua's reusable-release.yaml at tag v0.76.2). Not the trivy-action: its
-  # version tags were hijacked in March 2026.
-  TRIVY_IMAGE: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
-  # For both deploy jobs. kubectl must be within one minor version of the cluster (EKS 1.37).
+  # For both deploy jobs (the same pins are in ci.yml, which renders the manifests). kubectl must be within one minor version of the cluster (EKS 1.37).
   # Pinned with its SHA-256; the file's signature was checked with cosign (signed by the
   # Kubernetes release account krel-staging@k8s-releng-prod.iam.gserviceaccount.com).
   CLUSTER_NAME: cryptobot
@@ -52,7 +48,11 @@ env:
 
 jobs:
   image:
-    name: Test, build, scan, push
+    # "Test, build, scan, push" is a check the ruleset on main requires. A run that skips this
+    # job still reports it, and GitHub counts a skipped job as passed: under that name, a run
+    # started by hand (e.g. a rollback after a failed build) would let the untested commit into
+    # main. So only a run that builds uses the name; the condition is the `if:` below.
+    name: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/dev') && 'Test, build, scan, push' || 'No image built (only a push to dev builds one)' }}
     # Only for pushes to dev. Started by hand: deploy only. On main: the image already exists.
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-24.04
@@ -77,24 +77,13 @@ jobs:
         with:
           persist-credentials: false        # later steps need no Git access
 
-      - name: Lint and test (the image's test stage)
-        run: |
-          docker build --target test -t cryptobot-test .
-          docker run --rm cryptobot-test
-
-      - name: Build the runtime image
-        run: docker build --target runtime -t "cryptobot-app:$GITHUB_SHA" .
-
-      # Before the AWS sign-in, so no AWS credentials exist while a third-party tool runs.
-      # Trivy reads a saved copy of the image: it gets no Docker socket (that would mean
-      # root on the runner and write access to the image that is pushed next).
-      - name: Scan it with Trivy (fails on any CRITICAL vulnerability)
-        run: |
-          docker save "cryptobot-app:$GITHUB_SHA" -o "$RUNNER_TEMP/image.tar"
-          docker run --rm -v "$RUNNER_TEMP/image.tar:/image.tar:ro" "$TRIVY_IMAGE" \
-            image --input /image.tar --scanners vuln --severity CRITICAL --exit-code 1 \
-            --no-progress --disable-telemetry --skip-version-check
-          rm "$RUNNER_TEMP/image.tar"
+      # ruff + pytest, the runtime image cryptobot-app:<commit SHA>, Trivy: the same checks
+      # as ci.yml on other branches (one definition, in the repository at this commit). Before
+      # the AWS sign-in, so no AWS credentials exist while a third-party tool runs.
+      - name: Test, build and scan the image
+        uses: ./.github/actions/test-build-scan # zizmor: ignore[self-repository] actionlint cannot read $/ yet
+        with:
+          tag: ${{ github.sha }}
 
       # OIDC by hand instead of aws-actions/configure-aws-credentials: that action always
       # logs the role's unique ID (AROA...), from which the account ID can be decoded, and
