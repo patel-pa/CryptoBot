@@ -1,57 +1,42 @@
-from dotenv import load_dotenv
-import os
+from functools import lru_cache
+
 from pymongo import MongoClient
+from pymongo.errors import ConnectionFailure
 
-load_dotenv()
+from src.config import mongo_settings
+from src.utils.retry import retry
 
-# Read credentials from .env
-mongo_host = os.getenv("MONGO_HOST")
-mongo_port = os.getenv("MONGO_PORT")
-mongo_user = os.getenv("MONGO_USER")
-mongo_password = os.getenv("MONGO_PASSWORD")
-mongo_db = os.getenv("MONGO_DB")
 
-# Fail fast if .env is missing or any credential is absent
-# (mongo_user is excluded — it defaults to "admin")
-_required = {
-    "MONGO_HOST": mongo_host,
-    "MONGO_PORT": mongo_port,
-    "MONGO_USER": mongo_user,
-    "MONGO_PASSWORD": mongo_password,
-    "MONGO_DB": mongo_db,
-}
-_missing = [name for name, value in _required.items() if not value]
-if _missing:
-    raise EnvironmentError(
-        f"Missing MongoDB credentials in .env: {', '.join(_missing)}. "
-        "Check that a .env file exists with these keys."
-    )
+@lru_cache(maxsize=1)
+def get_db():
+    """Handle to the configured database, created on first use (not at import).
 
-# Connection URI.
-MONGO_URI = (
-    f"mongodb://{mongo_user}:{mongo_password}@{mongo_host}:{mongo_port}/?authSource=admin"
-)
-
-# serverSelectionTimeoutMS keeps a bad connection from hanging ~30s before failing.
-client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=3000)
-db = client[mongo_db]
+    Importing this module therefore never needs the Mongo env vars; only code
+    that actually talks to MongoDB does. Settings come from src.config.
+    """
+    settings = mongo_settings()
+    # serverSelectionTimeoutMS keeps a bad connection from hanging ~30s before failing.
+    client = MongoClient(settings.uri(), serverSelectionTimeoutMS=3000)
+    return client[settings.db]
 
 
 def get_collection(name):
     """Return a collection handle from the configured database."""
-    return db[name]
+    return get_db()[name]
 
 
-def test_connection():
-    """Test the MongoDB connection."""
-    try:
-        client.admin.command("ping")
-        print("✓ MongoDB connection successful!")
-        return True
-    except Exception as e:
-        print(f"✗ MongoDB connection failed: {e}")
-        return False
+def ping():
+    """Raise ConnectionFailure unless MongoDB answers a ping."""
+    get_db().client.admin.command("ping")
 
 
-if __name__ == "__main__":
-    test_connection()
+def wait_for_mongo(attempts=20, base_delay=1.0, max_delay=10.0):
+    """Block until MongoDB accepts connections; raise after `attempts` tries.
+
+    Same role as wait_for_postgres(): pods start in any order on Kubernetes.
+    Only connection errors are retried (ServerSelectionTimeoutError is one);
+    a missing env var or a wrong password fails immediately.
+    """
+    retry(ping, attempts=attempts, base_delay=base_delay, max_delay=max_delay,
+          exceptions=(ConnectionFailure,), what="MongoDB connection")
+    print("✓ MongoDB reachable", flush=True)

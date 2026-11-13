@@ -1,0 +1,6 @@
+# First run only (README.md, "First run"): copy this file to first_run_override.tf.
+# Terraform then keeps the state in a local file, because the S3 state bucket
+# does not exist yet. Delete the copy afterwards and move the state into S3.
+terraform {
+  backend "local" {}
+}

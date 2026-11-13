@@ -1,12 +1,14 @@
 # Runtime dependencies for the Dockerized services ONLY.
-# This is intentionally slim — it leaves out Jupyter/notebook/dev tooling that
-# lives in the full requirements.txt, so the container image stays small.
+# This is intentionally slim, so the container image stays small: the
+# development tools are in requirements-dev.txt, and the notebooks need
+# ipykernel on top (see README).
 # Versions are pinned to match the project's tested environment.
 
 # --- Web API ---
 fastapi==0.136.3
 uvicorn==0.49.0
 websockets==16.0
+prometheus-client==0.26.0    # /metrics for Prometheus (Task 9); no dependencies of its own
 
 # --- Databases ---
 SQLAlchemy==2.0.50
@@ -24,7 +26,9 @@ joblib==1.5.3
 requests==2.34.0
 websocket-client==1.9.0
 python-dotenv==1.2.2
+boto3==1.43.117              # AWS SDK: model upload/download in S3 (Task 5)
 
 # --- Dashboard ---
-streamlit==1.58.0
+streamlit==1.66.1            # first release that allows Pillow 13
+pillow==13.0.0               # comes with streamlit; pinned: 12.x has CRITICAL CVEs (Trivy)
 plotly==6.8.0

@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.features.build_features import make_features, make_target, FEATURE_COLUMNS
+from src.features.build_features import FEATURE_COLUMNS, make_features, make_target
 
 
 def _sample_df():
@@ -22,7 +22,7 @@ def test_make_features_selects_only_feature_columns():
 
 def test_make_features_are_all_float():
     X = make_features(_sample_df())
-    assert (X.dtypes == float).all()
+    assert (X.dtypes == "float64").all()
 
 
 def test_make_target_is_next_close():

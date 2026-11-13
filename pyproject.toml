@@ -1,0 +1,16 @@
+# Tool settings only. The app's dependencies stay in requirements-docker.txt,
+# the development tools in requirements-dev.txt.
+
+[tool.ruff]
+line-length = 127                    # same limit as the flake8 step in CI
+target-version = "py311"             # the Python version of the Docker image
+extend-exclude = ["notebooks"]       # exploration notebooks, not production code
+
+[tool.ruff.lint]
+# E, W: pycodestyle   F: pyflakes   I: import order
+# B: bugbear (likely bugs)   UP: newer syntax for the target Python version
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]                   # the repo root, so tests can `import src...`
+testpaths = ["tests"]

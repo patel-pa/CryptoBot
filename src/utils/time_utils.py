@@ -1,5 +1,8 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 import pandas as pd
+
+from src.params.constants import DATE_INPUT_FORMAT
 
 
 def to_ms(dt_str: str) -> int:
@@ -12,7 +15,7 @@ def to_ms(dt_str: str) -> int:
     Returns:
         Integer milliseconds since Unix epoch.
     """
-    dt = datetime.strptime(dt_str, "%d.%m.%YT%H:%M").replace(tzinfo=timezone.utc)
+    dt = datetime.strptime(dt_str, DATE_INPUT_FORMAT).replace(tzinfo=UTC)
     return int(dt.timestamp() * 1000)
 
 

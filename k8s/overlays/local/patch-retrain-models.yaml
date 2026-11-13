@@ -1,0 +1,19 @@
+# kind only: retrain writes the model to the shared local disk.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: retrain
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: retrain
+              volumeMounts:
+                - name: models
+                  mountPath: /app/models
+          volumes:
+            - name: models
+              persistentVolumeClaim:
+                claimName: models

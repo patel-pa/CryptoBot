@@ -3,7 +3,7 @@ from src.params.enums import Interval, Symbol
 # All symbols the system collects, stores, and predicts for
 SUPPORTED_SYMBOLS = [Symbol.BTCUSDT] #Symbol.ETHUSDT
 
-# REST API: 15-minute candles for historical data / ML training
+# REST API: 1-minute candles for historical data / ML training
 DEFAULT_REST_INTERVAL = Interval.ONE_MINUTE
 
 # WebSocket: 1-minute candles for the live streaming dashboard
@@ -32,8 +32,13 @@ BINANCE_KLINES_COLUMNS = [
 ]
 
 
-# Starting point for historical data collection (can be adjusted as needed)
-HISTORICAL_START_DATE = "01.01.2026T00:00"
+# How dates are written in settings: DD.MM.YYYYThh:mm, e.g. 01.10.2026T00:00 (UTC).
+DATE_INPUT_FORMAT = "%d.%m.%YT%H:%M"
+
+# Default start of the backfill when Postgres is empty (DATE_INPUT_FORMAT).
+# Override per environment with HISTORICAL_START_DATE (a fixed date) or
+# HISTORICAL_LOOKBACK_DAYS (days back from now); see src/config.py.
+HISTORICAL_START_DATE = "01.10.2026T00:00"
 
 # Storage names — single source of truth, shared by writers, init, and ML
 POSTGRES_TABLE = "ohlcv_data"        # historical candles (batch pipeline)

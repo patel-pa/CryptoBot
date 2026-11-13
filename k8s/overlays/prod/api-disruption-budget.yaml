@@ -1,0 +1,18 @@
+# At least one API pod keeps running while Kubernetes moves pods off a node on purpose (a node
+# drained for replacement, e.g. a new node image): it then evicts the two API pods one after
+# the other, never both at once. It does not stop a node from failing, and it does not slow
+# down deleting the namespace or the app.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+spec:
+  minAvailable: 1
+  # Pods that are not Ready (e.g. /ready fails while a database is down) protect nothing:
+  # without this, a node replacement would wait for them and fail after ~15 minutes.
+  unhealthyPodEvictionPolicy: AlwaysAllow
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api

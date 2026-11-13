@@ -1,15 +1,10 @@
-from pathlib import Path
-from src.storage.postgres import engine
-from src.storage.mongo import get_collection
 from src.params.constants import MONGO_COLLECTION, PREDICTIONS_COLLECTION
-
-SCHEMA_FILE = Path(__file__).parent / "schema.sql"
+from src.storage.mongo import get_collection, wait_for_mongo
+from src.storage.postgres import create_schema, wait_for_postgres
 
 
 def init_postgres():
-    sql = SCHEMA_FILE.read_text(encoding="utf-8")
-    with engine.begin() as conn:          # begin() = auto commit/rollback
-        conn.exec_driver_sql(sql)         # raw psycopg2 → allows multiple statements
+    create_schema()
     print("✓ Postgres tables ready")
 
 
@@ -33,6 +28,10 @@ def init_mongo():
 
 
 def init_db():
+    # Kubernetes starts pods in any order (no Compose `depends_on`), so wait
+    # for both databases before touching them.
+    wait_for_postgres()
+    wait_for_mongo()
     init_postgres()
     init_mongo()
 

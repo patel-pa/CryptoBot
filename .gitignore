@@ -88,17 +88,35 @@ target/
 # Mypy cache
 .mypy_cache/
 
+# Ruff cache
+.ruff_cache/
+
 # Virtual Environment
 .venv/
 venv/
 
-.env
-
 # Others
 PROJECT_CONTEXT.md
 cryptobot_timeline*
-.env
 
+# Local Kubernetes (kind) passwords: real values, never committed (see *.env.example)
+k8s/overlays/local/*.env
+
+# Written at deploy time: names the image in ECR, whose address contains the AWS account ID
+/k8s/deploy/
+
+# Trained models are build output, not source: S3 on AWS, a local file otherwise.
+models/*.pkl
+
+# Terraform: downloaded providers, local state and saved plans never go into Git
+# (state lives in S3). The provider lock file .terraform.lock.hcl IS committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+*.tfplan
+*_override.tf
+crash.log
 
 # Keep the ENTIRE references/ directory LOCAL only — phase reports, defense
 # deck, course notes stay on disk but are never pushed to the CV repo.

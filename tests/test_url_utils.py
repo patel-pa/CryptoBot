@@ -1,5 +1,5 @@
+from src.params.enums import Interval, Symbol
 from src.utils.url_utils import build_stream_url
-from src.params.enums import Symbol, Interval
 
 
 def test_build_stream_url_single_symbol():
@@ -16,3 +16,10 @@ def test_build_stream_url_multiple_symbols():
 def test_build_stream_url_uses_interval_value():
     url = build_stream_url([Symbol.BTCUSDT], Interval.FIFTEEN_MINUTES)
     assert "btcusdt@kline_15m" in url
+
+
+def test_enum_members_turn_into_their_values_as_text():
+    # StrEnum: str() and f-strings give "1m", not "Interval.ONE_MINUTE"
+    assert str(Interval.ONE_MINUTE) == "1m"
+    assert f"{Symbol.BTCUSDT}" == "BTCUSDT"
+    assert Interval.ONE_MINUTE == "1m"              # still compares equal to a plain string

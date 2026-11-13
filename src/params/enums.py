@@ -1,7 +1,7 @@
-from enum import Enum
+from enum import StrEnum
 
 
-class Interval(str, Enum):
+class Interval(StrEnum):
     ONE_MINUTE      = "1m"
     FIVE_MINUTES    = "5m"
     FIFTEEN_MINUTES = "15m"
@@ -9,6 +9,6 @@ class Interval(str, Enum):
     ONE_DAY         = "1d"
 
 
-class Symbol(str, Enum):
+class Symbol(StrEnum):
     BTCUSDT = "BTCUSDT"
     ETHUSDT = "ETHUSDT"

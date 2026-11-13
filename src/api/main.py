@@ -1,34 +1,97 @@
+import asyncio
 import json
 
 import pandas as pd
 import websockets
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
 
-from src.storage.postgres import engine
-from src.storage.mongo import get_collection
-from src.storage.mongo_writer import save_prediction
+from src.api import metrics
+from src.collection.stream_live import parse_tick
+from src.models.model_store import ModelUnavailable
+from src.models.predict_model import predict_next_close_detailed
 from src.params.constants import (
-    POSTGRES_TABLE,
-    SUPPORTED_SYMBOLS,
     DEFAULT_WS_INTERVAL,
     MONGO_COLLECTION,
+    POSTGRES_TABLE,
     PREDICTIONS_COLLECTION,
+    SUPPORTED_SYMBOLS,
 )
-from src.models.predict_model import predict_next_close_detailed
+from src.storage import mongo, postgres
+from src.storage.mongo import get_collection
+from src.storage.mongo_writer import save_prediction
+from src.storage.postgres import get_engine
 from src.utils.url_utils import build_stream_url
-from src.collection.stream_live import parse_tick
 
 app = FastAPI(title="CryptoBot API")
+app.middleware("http")(metrics.track_requests)     # count and time every request
 
 DEFAULT_SYMBOL = SUPPORTED_SYMBOLS[0].value
+
+# Upper bound for each /ready check. A Kubernetes readiness probe must answer
+# quickly; the probe's own timeout (set in the manifests) is a bit higher.
+READY_TIMEOUT_SECONDS = 2.0
 
 
 @app.get("/health")
 def health():
-    """Quick check that the API is running."""
+    """Liveness: the API process is up.
+
+    Deliberately makes no database calls, so a database outage never makes
+    Kubernetes restart healthy API pods (that is what /ready is for).
+    """
     return {"status": "ok"}
+
+
+@app.get("/metrics", include_in_schema=False)
+def prometheus_metrics():
+    """Prometheus metrics, in Prometheus' text format.
+
+    Scraped by Prometheus inside the cluster; not meant for the public Ingress.
+    Hidden from /docs because it is for monitoring, not for API users.
+    """
+    body, content_type = metrics.render()
+    return Response(body, media_type=content_type)
+
+
+async def _check(name, ping):
+    """Run one blocking database ping in a worker thread, with a time limit.
+
+    Returns "ok", "timeout" or "unavailable". Error details go to the log
+    only: /ready may be reachable from outside, and driver error messages
+    can contain internal host names.
+    """
+    try:
+        await asyncio.wait_for(asyncio.to_thread(ping), timeout=READY_TIMEOUT_SECONDS)
+        return "ok"
+    except TimeoutError:
+        print(f"Readiness: {name} did not answer within {READY_TIMEOUT_SECONDS:g}s", flush=True)
+        return "timeout"
+    except Exception as exc:
+        print(f"Readiness: {name} unavailable: {exc!r}", flush=True)
+        return "unavailable"
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness: can the API serve requests right now?
+
+    Pings PostgreSQL and MongoDB in parallel: 200 if both answer, 503
+    otherwise. Kubernetes only sends traffic to ready pods, and leaves an
+    unready pod running (no restart) until its databases are back.
+    """
+    pg_status, mongo_status = await asyncio.gather(
+        _check("postgres", postgres.ping),
+        _check("mongo", mongo.ping),
+    )
+    checks = {"postgres": pg_status, "mongo": mongo_status}
+    is_ready = all(status == "ok" for status in checks.values())
+    return JSONResponse(
+        status_code=200 if is_ready else 503,
+        content={"status": "ready" if is_ready else "not ready", "checks": checks},
+    )
 
 
 @app.get("/charts")
@@ -38,22 +101,28 @@ def charts(symbol: str = DEFAULT_SYMBOL, limit: int = 100):
         f"SELECT * FROM {POSTGRES_TABLE} WHERE symbol = :s "
         f"ORDER BY open_time DESC LIMIT :n"
     )
-    df = pd.read_sql(query, engine, params={"s": symbol, "n": limit})
+    df = pd.read_sql(query, get_engine(), params={"s": symbol, "n": limit})
     records = df.to_dict(orient="records")
     return records[::-1]  # reverse DESC fetch back into chronological order
 
 
-@app.get("/predict")
+@app.post("/predict")
 def predict(symbol: str = DEFAULT_SYMBOL):
-    """Predicted close of the next candle, from the latest candle in Mongo.
+    """Forecast the close of the next candle, from the latest candle in Mongo.
 
-    The forecast is also persisted (upsert) so /predictions can chart the
-    predicted-vs-actual history later.
+    POST because it writes: the forecast is stored (upsert, one per target
+    candle) so /predictions can chart predicted vs actual. The streamer calls
+    this after each closed candle; readers use GET /predictions. Without a
+    trained model this returns 503; /ready is not affected, because /charts
+    and /predictions still work.
     """
     try:
         result = predict_next_close_detailed(symbol=symbol)
+    except ModelUnavailable as e:
+        print(f"/predict: {e}", flush=True)       # details (bucket, path) to the log only
+        raise HTTPException(status_code=503, detail="No trained model is available yet.") from e
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     save_prediction(result)
     return {
         "symbol": symbol,
@@ -114,4 +183,4 @@ async def stream(websocket: WebSocket):
                 candle = parse_tick(data["k"])
                 await websocket.send_json(jsonable_encoder(candle))
     except WebSocketDisconnect:
-        pass 
+        pass
