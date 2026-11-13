@@ -36,7 +36,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 
 **Languages & core:** Python 3.11
 **Ingestion:** Binance REST API, Binance WebSocket (`websocket-client`, `websockets`)
-**Storage:** PostgreSQL (SQLAlchemy 2.0, psycopg2), MongoDB (PyMongo)
+**Storage:** PostgreSQL (SQLAlchemy 2, psycopg2), MongoDB (PyMongo)
 **Serving:** FastAPI + Uvicorn
 **Dashboard:** Streamlit + Plotly
 **ML:** scikit-learn, pandas, joblib
