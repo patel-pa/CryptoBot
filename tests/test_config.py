@@ -110,6 +110,12 @@ def test_postgres_url_escapes_special_characters(pg_env, monkeypatch):
     assert (parsed.host, parsed.port, parsed.database) == ("pg.example.com", 5433, "cryptobot")
 
 
+def test_postgres_url_names_the_installed_driver(pg_env):
+    url = config.postgres_settings().url()
+    assert url.drivername == "postgresql+psycopg2"
+    url.get_dialect().import_dbapi()                  # fails if that driver is not in the image
+
+
 def test_mongo_uri_escapes_special_characters(mongo_env, monkeypatch):
     monkeypatch.setenv("MONGO_PASSWORD", TRICKY_PASSWORD)
     parsed = parse_uri(config.mongo_settings().uri())
