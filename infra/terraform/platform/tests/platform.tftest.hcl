@@ -265,6 +265,109 @@ run "controllers_are_pinned_and_deploy_jobs_cannot_change_secret_stores" {
   }
 }
 
+run "monitoring_is_pinned_private_and_loads_every_dashboard_and_alert" {
+  command = plan
+
+  assert {
+    condition = join(" ", [
+      helm_release.kube_prometheus_stack.namespace, helm_release.kube_prometheus_stack.repository,
+      helm_release.kube_prometheus_stack.chart, helm_release.kube_prometheus_stack.version
+    ]) == "monitoring oci://ghcr.io/prometheus-community/charts kube-prometheus-stack 93.3.0"
+    error_message = "The monitoring stack must be the pinned kube-prometheus-stack in the namespace monitoring."
+  }
+
+  assert {
+    condition     = strcontains(file("${local.monitoring_dir}/README.md"), "--version ${helm_release.kube_prometheus_stack.version}")
+    error_message = "kind (monitoring/README.md) must install the same chart version as EKS."
+  }
+
+  assert {
+    condition = (
+      length(helm_release.kube_prometheus_stack.values) == 1 &&
+      helm_release.kube_prometheus_stack.values[0] == file("${local.monitoring_dir}/values.yaml") &&
+      yamldecode(helm_release.kube_prometheus_stack.values[0]).alertmanager.enabled == false &&
+      yamldecode(helm_release.kube_prometheus_stack.values[0]).grafana.sidecar.datasources.alertmanager.enabled == false &&
+      yamldecode(helm_release.kube_prometheus_stack.values[0]).grafana.sidecar.alerts.enabled == true
+    )
+    error_message = "EKS must use kind's settings file: no Alertmanager (nor a Grafana data source pointing to it), Grafana's alert loader on."
+  }
+
+  assert {
+    condition = (
+      yamldecode(helm_release.kube_prometheus_stack.values[0]).prometheus.additionalServiceMonitors[0].selector.matchLabels == { "app.kubernetes.io/name" = "api" } &&
+      toset(yamldecode(helm_release.kube_prometheus_stack.values[0]).prometheus.additionalServiceMonitors[0].namespaceSelector.matchNames) == toset(["cryptobot", "dev", "prod"]) &&
+      yamldecode(helm_release.kube_prometheus_stack.values[0]).prometheus.additionalServiceMonitors[0].endpoints[0].port == "http"
+    )
+    error_message = "Prometheus must scrape the api Service's port http in kind's namespace and in dev and prod."
+  }
+
+  assert {
+    condition = (
+      !can(yamldecode(helm_release.kube_prometheus_stack.values[0]).prometheus.prometheusSpec.storageSpec) &&
+      !can(yamldecode(helm_release.kube_prometheus_stack.values[0]).grafana.persistence) &&
+      !can(yamldecode(helm_release.kube_prometheus_stack.values[0]).grafana.ingress) &&
+      !can(yamldecode(helm_release.kube_prometheus_stack.values[0]).prometheus.ingress) &&
+      !strcontains(helm_release.kube_prometheus_stack.values[0], "LoadBalancer")
+    )
+    error_message = "No disks (EBS volumes), no Ingress and no LoadBalancer Service for monitoring: they would outlive a teardown or expose it."
+  }
+
+  assert {
+    condition = {
+      for name, config_map in kubernetes_config_map_v1.monitoring :
+      name => "${config_map.metadata[0].namespace} ${jsonencode(config_map.metadata[0].labels)} ${jsonencode(config_map.metadata[0].annotations)}"
+      } == {
+      cryptobot-dashboards = "monitoring {\"grafana_dashboard\":\"1\"} {\"grafana_folder\":\"CryptoBot\"}"
+      cryptobot-alerts     = "monitoring {\"grafana_alert\":\"1\"} {}"
+    }
+    error_message = "Dashboards and alert rules must reach Grafana's loaders (their labels) and the CryptoBot folder."
+  }
+
+  assert {
+    condition = (
+      toset(keys(kubernetes_config_map_v1.monitoring["cryptobot-dashboards"].data)) == fileset("${local.monitoring_dir}/dashboards", "*.json") &&
+      toset(keys(kubernetes_config_map_v1.monitoring["cryptobot-alerts"].data)) == fileset("${local.monitoring_dir}/alerts", "*.yaml")
+    )
+    error_message = "Every file in monitoring/dashboards and monitoring/alerts must be listed in monitoring/kustomization.yaml."
+  }
+
+  assert {
+    condition = alltrue(concat(
+      [for name, text in kubernetes_config_map_v1.monitoring["cryptobot-dashboards"].data : can(jsondecode(text))],
+      [for name, text in kubernetes_config_map_v1.monitoring["cryptobot-alerts"].data : can(yamldecode(text))]
+    ))
+    error_message = "Every dashboard must be valid JSON and every alert file valid YAML."
+  }
+
+  # Every `{...}` in a query is one series selector and must carry the namespace filter, and
+  # no metric (names of the kinds the dashboards use) may appear without such a selector.
+  assert {
+    condition = alltrue(flatten([
+      for name, text in kubernetes_config_map_v1.monitoring["cryptobot-dashboards"].data : [
+        for panel in jsondecode(text).panels : [
+          for query in panel.targets : (
+            query.datasource.uid == "prometheus" &&
+            length(regexall("\\{", query.expr)) == length(regexall("namespace=\"\\$namespace\"", query.expr)) &&
+            length(regexall("\\b(up|(cryptobot|kube|container|process)_[a-z_]+)[^a-z_{]", "${query.expr} ")) == 0
+          )
+        ]
+      ]
+    ]))
+    error_message = "Every dashboard query must use the chart's data source (uid prometheus) and filter every selector by the namespace chosen at the top, so dev and prod never mix."
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for name, text in kubernetes_config_map_v1.monitoring["cryptobot-alerts"].data : [
+        for group in yamldecode(text).groups : [
+          for rule in group.rules : [for query in rule.data : contains(["prometheus", "__expr__"], query.datasourceUid)]
+        ]
+      ]
+    ]))
+    error_message = "Every alert query must use the chart's Prometheus data source or a Grafana expression."
+  }
+}
+
 run "log_add_on_refuses_a_cluster_without_kept_log_groups" {
   command = plan
 

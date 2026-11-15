@@ -1,5 +1,5 @@
 # Settings for the Helm chart kube-prometheus-stack (Prometheus, Grafana and their helpers).
-# Installed on kind with helm (see README.md).
+# The same file on kind (helm, see README.md) and on EKS (Terraform, platform layer).
 # Only the differences from the chart's defaults are listed.
 #
 # Resources: the chart sets none, so its pods could land on a full node and would be the

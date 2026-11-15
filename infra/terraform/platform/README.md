@@ -20,6 +20,7 @@ outputs (the CI role ARNs and the log group names) from that layer's state, read
 | AWS Load Balancer Controller | Helm chart 3.6.2, `kube-system`, own Pod Identity role | Turns the dashboard's Ingress into one ALB |
 | External Secrets | Helm chart 2.14.0, `external-secrets`, own Pod Identity role | Copies each environment's database passwords from Secrets Manager into Kubernetes |
 | CloudWatch observability add-on | v7.0.1, container logs only (Fluent Bit; no CloudWatch agent pods), own Pod Identity role | Container logs into the bootstrap layer's log groups (7 days); its metrics features are off |
+| Monitoring | Helm chart kube-prometheus-stack 93.3.0, `monitoring`, settings from `monitoring/values.yaml`; our dashboards and alert rule as ConfigMaps, built from `monitoring/kustomization.yaml` (`monitoring.tf`) | Prometheus and Grafana: dashboards and the failed-job alert, the same as on kind. No AWS rights, no disks, no load balancer (see `monitoring/README.md`) |
 
 Subnet tags tell the AWS Load Balancer Controller where to put load balancers:
 `kubernetes.io/role/elb` (public) and `kubernetes.io/role/internal-elb` (private).
@@ -78,6 +79,8 @@ terraform init
 terraform plan -out=tfplan                     # have it reviewed before applying
 terraform apply tfplan
 # then apply envs/dev and/or envs/prod (their READMEs) and deploy the app ... work ...
+# Grafana: kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+#          (password and dashboards: monitoring/README.md)
 # remove the app (its ALB, see Teardown below), destroy envs/dev and envs/prod, then:
 terraform plan -destroy -out=destroy.tfplan    # have it reviewed before destroying
 terraform apply destroy.tfplan
@@ -109,15 +112,22 @@ namespace). Check afterwards that no ALB is left.
 
 Then destroy `envs/dev` and `envs/prod` with their own plan and apply (`envs/prod` in two
 steps, and its final snapshots stay on purpose: see its README), and then this layer (see above). The container log groups belong to the bootstrap
-layer and stay (7 days). No PersistentVolumeClaims, so no EBS volumes are left behind.
+layer and stay (7 days). No PersistentVolumeClaims, so no EBS volumes are left behind (the
+monitoring stack keeps its data on the pods' own disks, and Grafana is reached through
+`kubectl port-forward`, not a load balancer).
 
 ## Pod budget
 
 A t3.medium node runs at most 17 pods (VPC CNI without prefix delegation): 34 in the cluster.
-This layer uses about 15: per node aws-node, kube-proxy, the Pod Identity agent and Fluent Bit
-(4 × 2), once CoreDNS ×2, the CloudWatch operator, the Load Balancer Controller and External
-Secrets ×3 (7). That leaves about 19 for the apps (dev 3, prod 4, a few Job pods) and the
-monitoring stack of Week 4. If that gets tight: VPC CNI prefix delegation raises the limit.
+This layer uses about 21: per node aws-node, kube-proxy, the Pod Identity agent, Fluent Bit and
+node-exporter (5 × 2), once CoreDNS ×2, the CloudWatch operator, the Load Balancer Controller,
+External Secrets ×3, and Prometheus, Grafana, kube-state-metrics and the Prometheus Operator
+(11). That leaves about 13 for the apps (dev 3, prod 4) and the Job pods (one per running
+`ingest`, `retrain` or `init-db`). Memory is tight too: the monitoring stack requests about
+1.3 GiB (Grafana with its three loaders ~0.7, Prometheus ~0.4) of the roughly 6.6 GiB the two
+nodes offer to pods (4 GiB each minus what EKS reserves for the kubelet and the system; the
+exact value is "Allocatable" in `kubectl describe node`). If that gets tight: VPC CNI prefix delegation raises the pod limit, a third
+node adds pods and memory.
 
 ## Cost while it exists (Frankfurt list prices)
 

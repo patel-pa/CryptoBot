@@ -62,6 +62,12 @@ top: `cryptobot` on kind, `dev` or `prod` on EKS); **Alerting > Alert rules** sh
 *Scheduled job failed* in the same folder. The chart's own Kubernetes dashboards (cluster,
 nodes, pods) are listed at the top level of Dashboards.
 
+## On EKS
+
+The platform layer installs the same chart with this `values.yaml` and creates the same
+ConfigMaps from these files (see `infra/terraform/platform/README.md`), so Grafana is
+complete after `terraform apply`. Open it with the same port-forward command.
+
 ## The alert: "Scheduled job failed"
 
 Every run of a CronJob is a Job, scheduled or started by hand
