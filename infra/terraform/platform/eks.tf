@@ -1,4 +1,4 @@
-# The Kubernetes cluster: AWS runs the control plane, two t3.medium nodes run the pods.
+# The Kubernetes cluster: AWS runs the control plane, three t3.medium nodes run the pods.
 
 locals {
   # The settings that decide cost and security, in one place (the tests check them).
@@ -17,7 +17,7 @@ locals {
     enabled_log_types = []
 
     instance_types = ["t3.medium"]
-    node_count     = 2
+    node_count     = 3 # pod slots for dev, prod and monitoring (README: Pod budget)
   }
 
   # Tags for the node servers, their disks and primary network cards (written into the

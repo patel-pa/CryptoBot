@@ -4,7 +4,7 @@
 #
 # Resources: the chart sets none, so its pods could land on a full node and would be the
 # first to be evicted. Requests = what each part used on kind (13 Nov 2026, 1 node, ~50,000
-# series) plus some room, Prometheus more for EKS (2 nodes, 2 namespaces); memory limits
+# series) plus some room, Prometheus more for EKS (3 nodes, 2 namespaces); memory limits
 # about twice that; no CPU limits (they would only slow things down), as for the app.
 
 # Our alert is a Grafana alert (alerts/failed-jobs.yaml). Alertmanager would only forward

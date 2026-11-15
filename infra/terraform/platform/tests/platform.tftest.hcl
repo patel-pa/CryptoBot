@@ -103,7 +103,7 @@ run "cluster_is_pinned_and_each_deploy_role_edits_only_its_namespace" {
       authentication_mode     = "API"
       enabled_log_types       = []
       instance_types          = ["t3.medium"]
-      node_count              = 2
+      node_count              = 3
     }
     error_message = "Cost and security settings changed: version, support type (extended costs 6x), endpoints, authentication, control-plane logs or node size/count."
   }
