@@ -2,9 +2,9 @@
 # - app: ruff + pytest, the runtime image and its Trivy scan (the shared steps in
 #   .github/actions/test-build-scan). Not on dev: there cd.yml's image job runs the same steps
 #   right before it pushes the image, so here they would only run twice.
-# - config: the three Kustomize overlays rendered with the deploy's kubectl and validated
-#   against the Kubernetes 1.37 API; Trivy scans them and the Terraform code for
-#   misconfigurations.
+# - config: the three Kustomize overlays and monitoring/ rendered with the deploy's kubectl and
+#   validated against the Kubernetes 1.37 API; Trivy scans the overlays and the Terraform code
+#   for misconfigurations. (The monitoring files' own checks run in terraform.yml.)
 # - workflows: the workflow files themselves (actionlint, zizmor) and the pins kept twice.
 # Terraform's own checks (fmt, validate, tests) are in terraform.yml. Not on main: main only
 # receives merges whose files are those of a dev commit these checks already ran on (cd.yml
@@ -77,7 +77,7 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"   # before the runner's own kubectl
           "$RUNNER_TEMP/bin/kubectl" version --client
 
-      - name: Render the overlays dev, prod and local
+      - name: Render the overlays dev, prod and local, and monitoring
         run: |
           # local reads its passwords from two gitignored files; the examples' placeholder
           # values are enough to render.
@@ -88,6 +88,9 @@ jobs:
             kubectl kustomize "k8s/overlays/$overlay" > "$RUNNER_TEMP/manifests/$overlay.yaml"
             echo "$overlay: $(grep -c '^kind:' "$RUNNER_TEMP/manifests/$overlay.yaml") objects"
           done
+          # The dashboards and alert rule as ConfigMaps (what `kubectl apply -k monitoring` sends).
+          kubectl kustomize monitoring > "$RUNNER_TEMP/manifests/monitoring.yaml"
+          echo "monitoring: $(grep -c '^kind:' "$RUNNER_TEMP/manifests/monitoring.yaml") objects"
 
       # -strict: an unknown field (a typo such as `replica:`) is an error instead of being
       # dropped silently. Between AWS sessions this is the only check the manifests get.
@@ -96,7 +99,7 @@ jobs:
           docker run --rm -v "$RUNNER_TEMP/manifests:/manifests:ro" "$KUBECONFORM_IMAGE" \
             -strict -summary -kubernetes-version 1.37.0 \
             -schema-location "$K8S_SCHEMAS" -schema-location "$CRD_SCHEMAS" \
-            /manifests/dev.yaml /manifests/prod.yaml /manifests/local.yaml
+            /manifests/dev.yaml /manifests/prod.yaml /manifests/local.yaml /manifests/monitoring.yaml
 
       # Fails on any CRITICAL finding that .trivyignore.yaml does not list as accepted. local
       # is left out: its in-cluster databases exist only in kind, never on AWS.
