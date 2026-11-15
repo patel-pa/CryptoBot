@@ -82,7 +82,7 @@ terraform apply destroy.tfplan
 | DocumentDB `db.t4g.medium` | $0.089 |
 | DocumentDB storage ($0.119 per GB-month) and I/O ($0.22 per million) | cents |
 | 4 secrets ($0.40 each per month) | ~$0.002 |
-| **Total** | **≈ $0.11** (on top of the platform's ≈ $0.26) |
+| **Total** | **≈ $0.11** (on top of the platform's ≈ $0.31) |
 
 ## Checks (offline, no AWS account needed)
 

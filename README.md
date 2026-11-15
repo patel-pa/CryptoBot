@@ -6,7 +6,7 @@ An end-to-end data engineering platform that ingests Binance BTC/USDT market dat
 
 ## v2 in progress
 
-Version 2 moves the platform to AWS: Amazon EKS, Amazon RDS for PostgreSQL and Amazon DocumentDB, all infrastructure built by Terraform, delivery by GitHub Actions. The dev path (push to `dev` → tests → vulnerability scan → deploy to EKS) has run end to end on AWS; the prod path (merge into `main` → approval → the same image, by digest) was rehearsed once on AWS on 13 Nov 2026, including the teardown with final snapshots and the restore from them. The AWS environments exist only during work sessions: Terraform creates and destroys them to keep the cost low. Monitoring, alerting and the disaster-recovery documentation are still to come. The finished Data Engineering version (v1) is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
+Version 2 moves the platform to AWS: Amazon EKS, Amazon RDS for PostgreSQL and Amazon DocumentDB, all infrastructure built by Terraform, delivery by GitHub Actions. The dev path (push to `dev` → tests → vulnerability scan → deploy to EKS) has run end to end on AWS; the prod path (merge into `main` → approval → the same image, by digest) was rehearsed once on AWS on 13 Nov 2026, including the teardown with final snapshots and the restore from them. The AWS environments exist only during work sessions: Terraform creates and destroys them to keep the cost low. Monitoring with Prometheus and Grafana (dashboards, an alert on failed scheduled jobs) runs on a local kind cluster and is installed with the platform layer on AWS (to be proven in the next AWS session); the disaster-recovery documentation is still to come. The finished Data Engineering version (v1) is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
 
 ---
 
@@ -36,7 +36,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 
 **Languages & core:** Python 3.11
 **Ingestion:** Binance REST API, Binance WebSocket (`websocket-client`, `websockets`)
-**Storage:** PostgreSQL (SQLAlchemy 2.0, psycopg2), MongoDB (PyMongo)
+**Storage:** PostgreSQL (SQLAlchemy 2, psycopg2), MongoDB (PyMongo)
 **Serving:** FastAPI + Uvicorn
 **Dashboard:** Streamlit + Plotly
 **ML:** scikit-learn, pandas, joblib
@@ -54,7 +54,7 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 - **Scheduled jobs** — two commands keep the system current: `python -m src.cli ingest` re-runs the idempotent collector, and `python -m src.cli retrain` catches the data up and retrains the model. On Kubernetes they run as CronJobs, every 15 minutes and daily (proven on EKS dev); in docker compose, `historical` runs `ingest` on every `up` and `retrain` is run by hand. The API picks up a newer model by itself (S3 on AWS, a local file in docker compose), no restart needed. Each command's exit code tells the scheduler whether it failed.
 - **Verified data quality** — **~240,000+** one-minute BTC/USDT candles loaded with **0 gaps** (and growing with every ingest run), confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
 - **Predicted-vs-actual tracking** — every `/predict` call is persisted, so `/predictions` can join each forecast against the candle's real close for later evaluation.
-- **CI on every push** (every branch except `main`) — GitHub Actions runs every check that needs no AWS: ruff and the pytest suite, the image build and its Trivy scan (the same steps CD runs, so on `dev` only CD runs them), the three Kustomize overlays rendered and validated against the Kubernetes 1.37 API (kubeconform, strict), a Trivy misconfiguration scan of the Terraform code and the dev/prod manifests (fails on CRITICAL; the accepted findings are listed with their reasons in `.trivyignore.yaml`), and actionlint + zizmor on the workflows. Each Terraform folder gets `fmt -check`, `validate` and its mock-provider tests.
+- **CI on every push** (every branch except `main`) — GitHub Actions runs every check that needs no AWS: ruff and the pytest suite, the image build and its Trivy scan (the same steps CD runs, so on `dev` only CD runs them), the three Kustomize overlays and `monitoring/` rendered and validated against the Kubernetes 1.37 API (kubeconform, strict), a Trivy misconfiguration scan of the Terraform code and the dev/prod manifests (fails on CRITICAL; the accepted findings are listed with their reasons in `.trivyignore.yaml`), and actionlint + zizmor on the workflows. Each Terraform folder gets `fmt -check`, `validate` and its mock-provider tests.
 - **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA, then deployed to the `dev` namespace on EKS (skipped while no cluster runs); started by hand, it deploys or rolls back to any image already in ECR without rebuilding. A merge into `main` waits for approval, checks that `main` holds exactly the tested dev commit's files, and deploys that commit's image by digest to the `prod` namespace (rehearsed once, 13 Nov 2026). GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
 
 ---
@@ -73,6 +73,7 @@ src/
 ├── params/         # constants, enums
 └── utils/          # time / url / dataframe helpers
 k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (kind), overlays/dev and overlays/prod (EKS)
+monitoring/         # Prometheus + Grafana (Helm chart kube-prometheus-stack): chart settings, Grafana dashboards (JSON), the failed-job alert
 infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/, envs/dev/ and envs/prod/ (destroyed after every session; prod leaves a final snapshot and is restored from it); modules/environment/ = the databases, secrets and roles of one environment, shared by envs/dev and envs/prod
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
@@ -142,7 +143,7 @@ kubectl -n cryptobot port-forward svc/dashboard 8501:8501       # http://localho
 kind delete cluster --name cryptobot                            # removes the cluster and its data
 ```
 
-The `ingest` (every 15 min) and `retrain` (daily) CronJobs also run on their own. After a code change: build and `kind load` again, then `kubectl -n cryptobot rollout restart deployment`.
+The `ingest` (every 15 min) and `retrain` (daily) CronJobs also run on their own. After a code change: build and `kind load` again, then `kubectl -n cryptobot rollout restart deployment`. Monitoring (Prometheus, Grafana dashboards, the failed-job alert) installs on the same cluster with Helm: see [monitoring/README.md](monitoring/README.md).
 
 - **Set the passwords before the first apply.** Postgres and MongoDB take them only when their data disk is empty; to change them later, `kind delete cluster --name cryptobot` and start again.
 - **Applying again within 10 minutes** (while the finished `init-db` Job still exists) fails with `field is immutable` if anything it uses changed. Delete it first: `kubectl -n cryptobot delete job init-db --ignore-not-found`.

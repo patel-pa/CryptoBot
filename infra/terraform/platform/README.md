@@ -13,13 +13,14 @@ outputs (the CI role ARNs and the log group names) from that layer's state, read
 | 1 NAT gateway | in one public subnet | Private subnets reach the internet (Binance, image pulls) |
 | S3 gateway endpoint | private route tables | Free direct path to S3, so ECR image layers and the model skip the NAT's per-GB fee |
 | EKS cluster `cryptobot` | Kubernetes 1.37, standard support only | AWS runs the control plane; never slips into paid extended support |
-| Managed node group | 2× t3.medium (Amazon Linux 2023), private subnets | Runs every pod of both environments |
+| Managed node group | 3× t3.medium (Amazon Linux 2023), private subnets | Runs every pod of both environments and the monitoring stack |
 | EKS add-ons | VPC CNI, Pod Identity agent, kube-proxy, CoreDNS (pinned versions) | Pod networking, pod AWS rights, service routing, DNS |
 | Namespaces | `dev`, `prod` | Two environments in one cluster |
 | Access | the applying identity = cluster admin; `deploy-dev` / `deploy-prod` = `edit` in their own namespace only | CD can change its environment and nothing else |
 | AWS Load Balancer Controller | Helm chart 3.6.2, `kube-system`, own Pod Identity role | Turns the dashboard's Ingress into one ALB |
 | External Secrets | Helm chart 2.14.0, `external-secrets`, own Pod Identity role | Copies each environment's database passwords from Secrets Manager into Kubernetes |
 | CloudWatch observability add-on | v7.0.1, container logs only (Fluent Bit; no CloudWatch agent pods), own Pod Identity role | Container logs into the bootstrap layer's log groups (7 days); its metrics features are off |
+| Monitoring | Helm chart kube-prometheus-stack 93.3.0, `monitoring`, settings from `monitoring/values.yaml`; our dashboards and alert rule as ConfigMaps, built from `monitoring/kustomization.yaml` (`monitoring.tf`) | Prometheus and Grafana: dashboards and the failed-job alert, the same as on kind. No AWS rights, no disks, no load balancer (see `monitoring/README.md`) |
 
 Subnet tags tell the AWS Load Balancer Controller where to put load balancers:
 `kubernetes.io/role/elb` (public) and `kubernetes.io/role/internal-elb` (private).
@@ -28,7 +29,7 @@ Every AWS resource Terraform creates in this layer carries `Project=cryptobot`, 
 and `ManagedBy=terraform` (the provider's `default_tags`). Those do not reach what the node
 group's launch template starts, so the launch template passes them on to the node servers, their
 disks and their primary network cards, plus `Name=cryptobot-node`. Changing these tags therefore
-makes a new launch template version, and EKS replaces both nodes one by one (~10–15 min). The
+makes a new launch template version, and EKS replaces the three nodes one by one (~15–20 min). The
 ALBs, target groups and security groups the Load Balancer Controller creates carry
 `Project=cryptobot` and `ManagedBy=aws-load-balancer-controller`. Only AWS's own tags are on the
 extra network cards the VPC CNI attaches for pod addresses and on the security group EKS creates
@@ -78,6 +79,8 @@ terraform init
 terraform plan -out=tfplan                     # have it reviewed before applying
 terraform apply tfplan
 # then apply envs/dev and/or envs/prod (their READMEs) and deploy the app ... work ...
+# Grafana: kubectl -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+#          (password and dashboards: monitoring/README.md)
 # remove the app (its ALB, see Teardown below), destroy envs/dev and envs/prod, then:
 terraform plan -destroy -out=destroy.tfplan    # have it reviewed before destroying
 terraform apply destroy.tfplan
@@ -109,24 +112,34 @@ namespace). Check afterwards that no ALB is left.
 
 Then destroy `envs/dev` and `envs/prod` with their own plan and apply (`envs/prod` in two
 steps, and its final snapshots stay on purpose: see its README), and then this layer (see above). The container log groups belong to the bootstrap
-layer and stay (7 days). No PersistentVolumeClaims, so no EBS volumes are left behind.
+layer and stay (7 days). No PersistentVolumeClaims, so no EBS volumes are left behind (the
+monitoring stack keeps its data on the pods' own disks, and Grafana is reached through
+`kubectl port-forward`, not a load balancer).
 
 ## Pod budget
 
-A t3.medium node runs at most 17 pods (VPC CNI without prefix delegation): 34 in the cluster.
-This layer uses about 15: per node aws-node, kube-proxy, the Pod Identity agent and Fluent Bit
-(4 × 2), once CoreDNS ×2, the CloudWatch operator, the Load Balancer Controller and External
-Secrets ×3 (7). That leaves about 19 for the apps (dev 3, prod 4, a few Job pods) and the
-monitoring stack of Week 4. If that gets tight: VPC CNI prefix delegation raises the limit.
+A t3.medium node runs at most 17 pods (VPC CNI without prefix delegation): 51 with three nodes.
+This layer uses about 26: per node aws-node, kube-proxy, the Pod Identity agent, Fluent Bit and
+node-exporter (5 × 3), once CoreDNS ×2, the CloudWatch operator, the Load Balancer Controller,
+External Secrets ×3, and Prometheus, Grafana, kube-state-metrics and the Prometheus Operator
+(11). The apps need 7 (dev 3, prod 4), and a deploy adds a few for a moment: `init-db`, a new
+API and dashboard pod before the old ones stop, and the Job pods of `ingest` and `retrain`
+(finished pods don't count). With two nodes that peak was 33 of 34 pods (35 at 03:00 UTC,
+when `retrain` runs too), hence the third node. Memory: the monitoring stack requests about 1.3 GiB (Grafana with its three loaders
+~0.7, Prometheus ~0.4) and the apps about 1.8 GiB, of roughly 9.7 GiB the three nodes offer
+to pods (4 GiB each minus what EKS reserves for the kubelet and the system; the exact value is
+"Allocatable" in `kubectl describe node`). VPC CNI prefix delegation would raise the pod limit
+at no cost, but it adds no memory or CPU: up to 110 pods would share each node's memory, with
+the kubelet's reservation still sized for 17.
 
 ## Cost while it exists (Frankfurt list prices)
 
 | Item | Per hour |
 |---|---|
 | EKS control plane | $0.10 |
-| 2× t3.medium nodes + their disks | 2 × $0.048 + ~$0.005 |
+| 3× t3.medium nodes + their disks | 3 × $0.048 + ~$0.008 |
 | NAT gateway + its public IPv4 address | $0.052 + $0.005 |
-| **Total** | **≈ $0.26** |
+| **Total** | **≈ $0.31** |
 | Data through the NAT gateway | $0.052 per GB (S3 traffic is free through the endpoint) |
 | Container logs | $0.63 per GB ingested |
 | ALB, once an Ingress exists | ≈ $0.027 + its public IPv4 addresses |

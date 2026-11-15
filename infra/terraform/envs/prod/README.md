@@ -143,7 +143,7 @@ Remove-Item Env:TF_VAR_restore_snapshots       # the next plan uses the newest a
 | DocumentDB `db.t4g.medium` | $0.089 |
 | DocumentDB storage and I/O | cents |
 | 4 secrets ($0.40 each per month) | ~$0.002 |
-| **Total** | **≈ $0.13** (on top of the platform's ≈ $0.26) |
+| **Total** | **≈ $0.13** (on top of the platform's ≈ $0.31) |
 
 Backups within 7 days are free up to the database's size. Between sessions only the final
 snapshots remain (a few cents per month).

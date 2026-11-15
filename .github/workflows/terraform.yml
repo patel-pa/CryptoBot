@@ -43,15 +43,16 @@ jobs:
         with:
           persist-credentials: false        # later steps need no Git access
 
-      # A small `terraform` command that runs the pinned image in this folder. It mounts all
-      # of infra/terraform: envs/dev and envs/prod use ../../modules/environment.
+      # A small `terraform` command that runs the pinned image in this folder. It mounts the
+      # whole repository: envs/dev and envs/prod use ../../modules/environment, and the
+      # platform layer reads monitoring/ (chart settings, dashboards, alert rule).
       - name: Set up terraform
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
           cat > "$RUNNER_TEMP/bin/terraform" <<'EOF'
           #!/usr/bin/env bash
           exec docker run --rm -e TF_IN_AUTOMATION=1 -e TF_INPUT=0 \
-            -v "$GITHUB_WORKSPACE/infra/terraform:/terraform" -w "/terraform/$FOLDER" \
+            -v "$GITHUB_WORKSPACE:/repo" -w "/repo/infra/terraform/$FOLDER" \
             "$TERRAFORM_IMAGE" "$@"
           EOF
           chmod +x "$RUNNER_TEMP/bin/terraform"

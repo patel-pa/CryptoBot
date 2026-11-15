@@ -98,7 +98,9 @@ class PostgresSettings:
         query = {key: value for key, value in
                  (("sslmode", self.sslmode), ("sslrootcert", self.sslrootcert)) if value}
         return URL.create(
-            "postgresql",
+            # Name the driver: from SQLAlchemy 2.1 on, plain "postgresql" means
+            # psycopg 3, but the image installs psycopg2 (psycopg2-binary).
+            "postgresql+psycopg2",
             username=self.user,
             password=self.password,
             host=self.host,
