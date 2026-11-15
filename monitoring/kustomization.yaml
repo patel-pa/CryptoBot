@@ -1,0 +1,30 @@
+# Our dashboards and alert rule as ConfigMaps in the namespace monitoring. Grafana's
+# loaders (sidecar containers in its pod) find them by their label and load them within
+# seconds; no Grafana restart. Apply after the chart: kubectl apply -k monitoring
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: monitoring
+
+# Fixed names (no content hash appended): nothing refers to these ConfigMaps, and with a
+# hash every change would ADD a ConfigMap next to the old one, so Grafana would load
+# both versions of a dashboard.
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: cryptobot-dashboards
+    files:
+      - dashboards/api.json
+      - dashboards/jobs.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: CryptoBot       # the same folder as the alert rule
+  - name: cryptobot-alerts
+    files:
+      - alerts/failed-jobs.yaml
+    options:
+      labels:
+        grafana_alert: "1"

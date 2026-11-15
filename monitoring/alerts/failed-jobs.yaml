@@ -1,0 +1,69 @@
+# Grafana alert rule (file provisioning format): the latest run of a scheduled job failed.
+# Loaded by Grafana's alert loader from the ConfigMap that kustomization.yaml builds.
+#
+# Every run of a CronJob is a Job (scheduled, or started by hand with
+# `kubectl create job --from=cronjob/...`). Kubernetes keeps the last 3 successful and the
+# last 3 failed ones (k8s/base/cronjobs.yaml), and kube-state-metrics reports for each its
+# start time, its CronJob (label owner_name) and whether it completed or failed. The alert
+# fires for a CronJob when its newest failed run started after its newest successful run,
+# or when it has no successful run at all. It stays on while the next run is still going
+# and clears once a run succeeds. No notification is sent; the alert shows in Grafana
+# (Alerting > Alert rules) and on the "Scheduled jobs" dashboard.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: scheduled-jobs
+    folder: CryptoBot
+    interval: 1m                      # evaluated every minute
+    rules:
+      - uid: cryptobot-job-failed
+        title: Scheduled job failed
+        condition: B
+        data:
+          - refId: A                  # one result per CronJob whose latest run failed
+            datasourceUid: prometheus
+            relativeTimeRange:
+              from: 600
+              to: 0
+            model:
+              refId: A
+              instant: true
+              expr: |
+                # when the newest FAILED run of each CronJob started ...
+                max by (namespace, owner_name) (
+                    kube_job_status_start_time
+                  * on (namespace, job_name) group_left (owner_name) kube_job_owner{owner_kind="CronJob"}
+                  and on (namespace, job_name) kube_job_failed{condition="true"} == 1
+                )
+                # ... is later than when its newest SUCCESSFUL run started (0 if there is none)
+                > on (namespace, owner_name)
+                (
+                    max by (namespace, owner_name) (
+                        kube_job_status_start_time
+                      * on (namespace, job_name) group_left (owner_name) kube_job_owner{owner_kind="CronJob"}
+                      and on (namespace, job_name) kube_job_complete{condition="true"} == 1
+                    )
+                  or
+                    max by (namespace, owner_name) (kube_job_owner{owner_kind="CronJob"}) * 0
+                )
+          - refId: B                  # fire for every result of A
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params: [0]
+        noDataState: OK               # no result = no CronJob's latest run failed
+        execErrState: Error           # Prometheus not reachable: shown as an error, not as OK
+        for: 0s                       # a failed run is a fact, not a passing spike
+        labels:
+          severity: warning
+        annotations:
+          summary: "The latest run of {{ $labels.owner_name }} in {{ $labels.namespace }} failed"
+          description: >-
+            Find the run with `kubectl -n {{ $labels.namespace }} get jobs` and read its
+            logs with `kubectl -n {{ $labels.namespace }} logs job/<name>`. The alert clears
+            once a run of {{ $labels.owner_name }} succeeds.

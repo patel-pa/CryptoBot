@@ -10,6 +10,9 @@ k8s
 # Terraform code (and its local state and provider downloads) is never needed in the image.
 infra
 
+# Monitoring settings, dashboards and alert rules go into the cluster, never into the image.
+monitoring
+
 # Local Python environments / caches
 venv
 __pycache__

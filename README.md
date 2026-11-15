@@ -6,7 +6,7 @@ An end-to-end data engineering platform that ingests Binance BTC/USDT market dat
 
 ## v2 in progress
 
-Version 2 moves the platform to AWS: Amazon EKS, Amazon RDS for PostgreSQL and Amazon DocumentDB, all infrastructure built by Terraform, delivery by GitHub Actions. The dev path (push to `dev` → tests → vulnerability scan → deploy to EKS) has run end to end on AWS; the prod path (merge into `main` → approval → the same image, by digest) was rehearsed once on AWS on 13 Nov 2026, including the teardown with final snapshots and the restore from them. The AWS environments exist only during work sessions: Terraform creates and destroys them to keep the cost low. Monitoring, alerting and the disaster-recovery documentation are still to come. The finished Data Engineering version (v1) is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
+Version 2 moves the platform to AWS: Amazon EKS, Amazon RDS for PostgreSQL and Amazon DocumentDB, all infrastructure built by Terraform, delivery by GitHub Actions. The dev path (push to `dev` → tests → vulnerability scan → deploy to EKS) has run end to end on AWS; the prod path (merge into `main` → approval → the same image, by digest) was rehearsed once on AWS on 13 Nov 2026, including the teardown with final snapshots and the restore from them. The AWS environments exist only during work sessions: Terraform creates and destroys them to keep the cost low. Monitoring with Prometheus and Grafana (dashboards, an alert on failed scheduled jobs) runs on a local kind cluster; the disaster-recovery documentation is still to come. The finished Data Engineering version (v1) is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
 
 ---
 
@@ -73,6 +73,7 @@ src/
 ├── params/         # constants, enums
 └── utils/          # time / url / dataframe helpers
 k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (kind), overlays/dev and overlays/prod (EKS)
+monitoring/         # Prometheus + Grafana (Helm chart kube-prometheus-stack): chart settings, Grafana dashboards (JSON), the failed-job alert
 infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/, envs/dev/ and envs/prod/ (destroyed after every session; prod leaves a final snapshot and is restored from it); modules/environment/ = the databases, secrets and roles of one environment, shared by envs/dev and envs/prod
 tests/              # pytest suite
 notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
@@ -142,7 +143,7 @@ kubectl -n cryptobot port-forward svc/dashboard 8501:8501       # http://localho
 kind delete cluster --name cryptobot                            # removes the cluster and its data
 ```
 
-The `ingest` (every 15 min) and `retrain` (daily) CronJobs also run on their own. After a code change: build and `kind load` again, then `kubectl -n cryptobot rollout restart deployment`.
+The `ingest` (every 15 min) and `retrain` (daily) CronJobs also run on their own. After a code change: build and `kind load` again, then `kubectl -n cryptobot rollout restart deployment`. Monitoring (Prometheus, Grafana dashboards, the failed-job alert) installs on the same cluster with Helm: see [monitoring/README.md](monitoring/README.md).
 
 - **Set the passwords before the first apply.** Postgres and MongoDB take them only when their data disk is empty; to change them later, `kind delete cluster --name cryptobot` and start again.
 - **Applying again within 10 minutes** (while the finished `init-db` Job still exists) fails with `field is immutable` if anything it uses changed. Delete it first: `kubectl -n cryptobot delete job init-db --ignore-not-found`.

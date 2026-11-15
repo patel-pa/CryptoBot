@@ -1,0 +1,114 @@
+# Settings for the Helm chart kube-prometheus-stack (Prometheus, Grafana and their helpers).
+# Installed on kind with helm (see README.md).
+# Only the differences from the chart's defaults are listed.
+#
+# Resources: the chart sets none, so its pods could land on a full node and would be the
+# first to be evicted. Requests = what each part used on kind (13 Nov 2026, 1 node, ~50,000
+# series) plus some room, Prometheus more for EKS (2 nodes, 2 namespaces); memory limits
+# about twice that; no CPU limits (they would only slow things down), as for the app.
+
+# Our alert is a Grafana alert (alerts/failed-jobs.yaml). Alertmanager would only forward
+# the chart's built-in Prometheus rules, which nobody receives; they still show in Grafana.
+alertmanager:
+  enabled: false
+
+# Targets Prometheus cannot reach, which would show as "down" forever: the control plane
+# (run by AWS on EKS, on localhost only in kind) and kube-proxy (its metrics listen on
+# localhost only in kind; nothing of ours uses them). Off also removes their built-in rules.
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    # The data lives on the pod's own disk (no volume claim, so no EBS volume to clean up)
+    # and is lost when the pod is replaced: fine for a cluster that lives a few hours.
+    retention: 2d
+    retentionSize: 2GB
+    resources:                        # used on kind: 250 MiB, 0.03 CPU
+      requests:
+        cpu: 100m
+        memory: 384Mi
+      limits:
+        memory: 1Gi
+
+  # Scrape the API's /metrics: every Service labelled api, in kind's namespace and in the
+  # EKS namespaces, on its port named http (k8s/base/api.yaml). Each pod is one target,
+  # so prod's two API pods are scraped separately.
+  additionalServiceMonitors:
+    - name: cryptobot-api
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: api
+      namespaceSelector:
+        matchNames: [cryptobot, dev, prod]
+      endpoints:
+        - port: http
+          path: /metrics
+          interval: 30s
+
+prometheusOperator:
+  resources:                          # used on kind: 27 MiB
+    requests:
+      cpu: 20m
+      memory: 48Mi
+    limits:
+      memory: 128Mi
+  prometheusConfigReloader:           # a small helper container in the Prometheus pod
+    resources:                        # used on kind: 14 MiB
+      requests:
+        cpu: 10m
+        memory: 24Mi
+      limits:
+        memory: 64Mi
+
+kube-state-metrics:
+  resources:                          # used on kind: 31 MiB
+    requests:
+      cpu: 20m
+      memory: 48Mi
+    limits:
+      memory: 128Mi
+
+prometheus-node-exporter:             # one pod per node
+  resources:                          # used on kind: 11 MiB
+    requests:
+      cpu: 10m
+      memory: 24Mi
+    limits:
+      memory: 64Mi
+
+grafana:
+  resources:                          # used on kind: 410 MiB, 0.05 CPU
+    requests:
+      cpu: 50m
+      memory: 448Mi
+    limits:
+      memory: 768Mi
+  sidecar:
+    resources:                        # each of the 3 loaders below; used on kind: 79 MiB
+      requests:
+        cpu: 10m
+        memory: 96Mi
+      limits:
+        memory: 192Mi
+    # Dashboards (dashboards/*.json) arrive as ConfigMaps labelled grafana_dashboard: "1"
+    # (that loader is on by default); ours go into the Grafana folder named by their
+    # annotation grafana_folder, the chart's own dashboards stay at the top level.
+    dashboards:
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+    # The same for alert rules (alerts/*.yaml, label grafana_alert); off by default.
+    alerts:
+      enabled: true
+    # The third loader (on by default) adds the data sources: Prometheus, but not the
+    # Alertmanager one, which would point to the Alertmanager switched off above.
+    datasources:
+      alertmanager:
+        enabled: false
