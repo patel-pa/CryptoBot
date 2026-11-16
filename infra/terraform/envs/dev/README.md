@@ -48,7 +48,8 @@ terraform apply tfplan                         # ~10-15 min (DocumentDB is the s
 # deploy the app (README in the repository root: "Deploy to dev on EKS") ... work ...
 # remove the app FIRST (and push nothing to dev until this layer is destroyed: CD would deploy it again):
 # from the repository root, kubectl delete -k k8s/overlays/dev --ignore-not-found
-# (deletes the dashboard's ALB), then wait until no load balancer is left
+# (deletes the dashboard's ALB), then wait until no load balancer named cryptobot-dev is left
+# (prod's may still run: both share the cluster)
 terraform plan -destroy -out=destroy.tfplan    # have it reviewed before destroying
 terraform apply destroy.tfplan
 # then destroy the platform layer

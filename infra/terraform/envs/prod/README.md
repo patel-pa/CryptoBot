@@ -72,7 +72,8 @@ terraform apply tfplan
 
 # remove the app FIRST (merge nothing to main and start no CD run on main until this layer is
 # destroyed, else CD deploys it again); from the repository root:
-# kubectl delete -k k8s/overlays/prod --ignore-not-found, then wait until no load balancer is left
+# kubectl delete -k k8s/overlays/prod --ignore-not-found, then wait until no load balancer
+# named cryptobot-prod is left (dev's may still run: both share the cluster)
 
 # teardown step 1: protection off, final snapshot names set (see final_on_destroy in the plan)
 terraform plan -var deletion_protection=false -out=tfplan
@@ -95,7 +96,8 @@ be deleted with a final snapshot).
 
 After a destroy, the final snapshots are no longer in any Terraform state: they are AWS
 resources that the teardown leaves behind **on purpose**, the only ones (a leftover check after
-a prod teardown must expect them). Each teardown adds two. They cost a few cents per month (backup storage for a few hundred MB).
+a prod teardown must expect them). Each teardown adds two. They cost a few cents per month
+(backup storage for a few hundred MB).
 
 ```bash
 # list them, newest last
@@ -119,7 +121,11 @@ inside a `-var` argument):
 $env:TF_VAR_restore_snapshots = '{postgres="cryptobot-prod-postgres-final-2026-11-20-1730", mongo="cryptobot-prod-mongo-final-2026-11-20-1730"}'
 terraform plan -out=tfplan                     # snapshots.restore_from must show these names
 terraform apply tfplan
-Remove-Item Env:TF_VAR_restore_snapshots       # the next plan uses the newest again
+Remove-Item Env:TF_VAR_restore_snapshots       # later creates restore the newest snapshots again
+# then, as after every restore, plan and apply ONCE MORE before deploying ("One work session"):
+# exactly "1 to change", master_password_wo_version +1 (2 -> 3 while password_version = 1)
+terraform plan -out=tfplan
+terraform apply tfplan
 ```
 
 ## When something goes wrong
