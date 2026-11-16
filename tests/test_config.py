@@ -295,5 +295,6 @@ def test_importing_the_app_needs_no_db_env_vars():
          "import src.api.main, src.storage.init_db, src.models.train_model, "
          "src.collection.fetch_historical, src.cli"],
         cwd=REPO_ROOT, env=env, capture_output=True, text=True,
+        timeout=120,                    # an import that blocks fails here, not at CI's limit
     )
     assert result.returncode == 0, result.stderr

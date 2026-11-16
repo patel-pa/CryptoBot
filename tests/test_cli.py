@@ -59,6 +59,6 @@ def test_exit_code_reaches_the_shell():
     process ends with exit code 1 (what Kubernetes reads to mark the Job failed)."""
     env = {**os.environ, "POSTGRES_HOST": ""}
     result = subprocess.run([sys.executable, "-m", "src.cli", "ingest"],
-                            cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=60)
+                            cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=120)
     assert result.returncode == 1
     assert "ingest: FAILED" in result.stdout

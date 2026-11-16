@@ -7,7 +7,7 @@ databases and the prediction are replaced by fakes.
 """
 import asyncio
 import json
-import time
+import threading
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -44,20 +44,21 @@ def pings(monkeypatch):
     return set_pings
 
 
-def call_ready():
-    """Run the /ready endpoint; return (status code, JSON body, seconds it took).
+def call_ready(after=None):
+    """Run the /ready endpoint; return (status code, JSON body).
 
-    The time is measured inside the event loop: when asyncio.run() closes the
-    loop it waits for any ping thread still sleeping, which is not part of
-    the endpoint's response time.
+    `after` runs as soon as the endpoint has answered, still inside the event
+    loop: asyncio.run() waits for every ping thread before it returns, so a
+    blocked fake ping must be released there.
     """
-    async def timed():
-        start = time.monotonic()
+    async def run():
         response = await api.ready()
-        return response, time.monotonic() - start
+        if after:
+            after()
+        return response
 
-    response, elapsed = asyncio.run(timed())
-    return response.status_code, json.loads(response.body), elapsed
+    response = asyncio.run(run())
+    return response.status_code, json.loads(response.body)
 
 
 def test_routes_are_registered():
@@ -74,28 +75,28 @@ def test_health_makes_no_database_calls(pings):
 
 def test_ready_when_both_databases_answer(pings):
     pings()
-    status, body, _ = call_ready()
+    status, body = call_ready()
     assert status == 200
     assert body == {"status": "ready", "checks": {"postgres": "ok", "mongo": "ok"}}
 
 
 def test_not_ready_when_postgres_is_down(pings):
     pings(postgres_ping=pg_refused)
-    status, body, _ = call_ready()
+    status, body = call_ready()
     assert status == 503
     assert body == {"status": "not ready", "checks": {"postgres": "unavailable", "mongo": "ok"}}
 
 
 def test_not_ready_when_mongo_is_down(pings):
     pings(mongo_ping=mongo_no_server)
-    status, body, _ = call_ready()
+    status, body = call_ready()
     assert status == 503
     assert body["checks"] == {"postgres": "ok", "mongo": "unavailable"}
 
 
 def test_error_details_are_not_exposed(pings):
     pings(postgres_ping=pg_refused, mongo_ping=mongo_no_server)
-    _, body, _ = call_ready()
+    _, body = call_ready()
     text = json.dumps(body)
     assert "db-internal" not in text
     assert "mongo-internal" not in text
@@ -103,18 +104,23 @@ def test_error_details_are_not_exposed(pings):
 
 def test_slow_database_reports_timeout_at_the_limit(pings, monkeypatch):
     monkeypatch.setattr(api, "READY_TIMEOUT_SECONDS", 0.2)
-    pings(postgres_ping=lambda: time.sleep(1.5))
-    status, body, elapsed = call_ready()
+    release = threading.Event()
+    pings(postgres_ping=lambda: release.wait(10))      # answers only once released
+    # Released only after /ready has answered: without the time limit, /ready would
+    # wait the full 10 s and then report "ok".
+    status, body = call_ready(after=release.set)
     assert status == 503
     assert body["checks"] == {"postgres": "timeout", "mongo": "ok"}
-    assert elapsed < 1.0               # answered at the 0.2 s limit, not after 1.5 s
 
 
-def test_checks_run_in_parallel(pings):
-    pings(postgres_ping=lambda: time.sleep(0.5), mongo_ping=lambda: time.sleep(0.5))
-    status, _, elapsed = call_ready()
+def test_checks_run_in_parallel(pings, monkeypatch):
+    monkeypatch.setattr(api, "READY_TIMEOUT_SECONDS", 10)
+    # Each ping waits until both are running. One after the other, the first
+    # would wait alone, give up after 5 s, and the database would count as down.
+    both_running = threading.Barrier(2, timeout=5)
+    pings(postgres_ping=both_running.wait, mongo_ping=both_running.wait)
+    status, _ = call_ready()
     assert status == 200
-    assert elapsed < 0.9               # one after the other would take 1.0 s
 
 
 def test_predict_accepts_post_only():
