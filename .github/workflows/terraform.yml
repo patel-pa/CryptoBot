@@ -62,8 +62,9 @@ jobs:
       - name: terraform fmt -check
         run: terraform fmt -check -recursive -diff
 
-      - name: terraform init -backend=false
-        run: terraform init -backend=false
+      - name: terraform init -backend=false -lockfile=readonly
+        # readonly: an out-of-date lock file fails here instead of being completed silently
+        run: terraform init -backend=false -lockfile=readonly
 
       - name: terraform validate
         run: terraform validate

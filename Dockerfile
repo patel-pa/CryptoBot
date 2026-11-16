@@ -6,7 +6,7 @@
 #   base     the app's packages, shared by the two stages below
 #   test     base + development tools (ruff, pytest), for checks only, never deployed:
 #              docker build --target test -t cryptobot-test .
-#              docker run --rm cryptobot-test
+#              docker run --rm --network none cryptobot-test
 #   runtime  base + the AWS database CA bundle + the code, run as a non-root user:
 #            the production image (the last stage, so a plain `docker build .`
 #            produces it)

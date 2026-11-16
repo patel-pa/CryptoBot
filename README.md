@@ -403,7 +403,7 @@ Lint and tests run in the Dockerfile's `test` stage (the production packages plu
 
 ```bash
 docker build --target test -t cryptobot-test .
-docker run --rm cryptobot-test        # ruff check . + pytest
+docker run --rm --network none cryptobot-test        # ruff check . + pytest (they need no network)
 ```
 
 Without Docker (Python 3.11): `pip install -r requirements-docker.txt -r requirements-dev.txt`, then `ruff check .` and `pytest`.

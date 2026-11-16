@@ -7,9 +7,8 @@
 # - By hand (`gh workflow run cd.yml --ref dev` or `--ref main`, optionally
 #   `-f image_sha=<full SHA>`, or the "Run workflow" button in the Actions tab): only that
 #   branch's deploy job, for an image already in ECR. No SHA = the branch's newest commit
-#   (e.g. after the cluster was created); an older commit SHA =
-#   rollback. Nothing is rebuilt or scanned again, so a vulnerability published since then
-#   cannot block a rollback.
+#   (e.g. after the cluster was created); an older commit SHA = rollback. Nothing is rebuilt
+#   or scanned again, so a vulnerability published since then cannot block a rollback.
 # The cluster exists only during work sessions: without it the deploy jobs skip (green).
 
 name: CD
@@ -39,10 +38,11 @@ permissions:
 env:
   AWS_REGION: eu-central-1
   ECR_REPOSITORY: cryptobot
-  # For both deploy jobs (the same pins are in ci.yml, which renders the manifests). kubectl must be within one minor version of the cluster (EKS 1.37).
-  # Pinned with its SHA-256; the file's signature was checked with cosign (signed by the
-  # Kubernetes release account krel-staging@k8s-releng-prod.iam.gserviceaccount.com).
-  CLUSTER_NAME: cryptobot
+  CLUSTER_NAME: cryptobot                 # the EKS cluster both deploy jobs deploy to
+  # kubectl for both deploy jobs (the same pins are in ci.yml, which renders the manifests),
+  # within one minor version of the cluster (EKS 1.37). Pinned with its SHA-256; the file's
+  # signature was checked with cosign (signed by the Kubernetes release account
+  # krel-staging@k8s-releng-prod.iam.gserviceaccount.com).
   KUBECTL_VERSION: v1.37.2
   KUBECTL_SHA256: c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
 
