@@ -16,6 +16,7 @@ from sqlalchemy.exc import OperationalError
 
 import src.api.main as api
 from src.models.model_store import ModelUnavailable
+from src.models.predict_model import NoCandlesYet
 from src.storage import mongo, postgres
 
 
@@ -140,3 +141,21 @@ def test_predict_without_a_model_is_503_without_details(monkeypatch):
         api.predict()
     assert exc.value.status_code == 503
     assert "secret-bucket" not in exc.value.detail
+
+
+def test_predict_before_the_first_candle_is_404_with_a_fixed_message(monkeypatch):
+    def no_candle(symbol):
+        raise NoCandlesYet("no closed candle stored yet for BTCUSDT (mongo-internal.example)")
+    monkeypatch.setattr(api, "predict_next_close_detailed", no_candle)
+    with pytest.raises(HTTPException) as exc:
+        api.predict()
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "No closed candle is stored yet."
+
+
+def test_a_model_error_is_not_turned_into_404(monkeypatch):
+    def wrong_features(symbol):        # e.g. an older model after a feature change
+        raise ValueError("X has 6 features, but LinearRegression is expecting 5 features")
+    monkeypatch.setattr(api, "predict_next_close_detailed", wrong_features)
+    with pytest.raises(ValueError, match="6 features"):    # the server turns it into a 500
+        api.predict()

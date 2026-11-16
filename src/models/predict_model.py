@@ -16,6 +16,10 @@ SYMBOL = SUPPORTED_SYMBOLS[0].value
 INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "1d": 1440}
 
 
+class NoCandlesYet(LookupError):
+    """No closed candle is stored yet for this symbol (the streamer saves them)."""
+
+
 def predict_next_close_detailed(symbol=SYMBOL, n=1):
     """Predict the next candle's close from the latest candle in Mongo.
 
@@ -23,6 +27,9 @@ def predict_next_close_detailed(symbol=SYMBOL, n=1):
       - source_kline_start_time : the candle fed to the model (the input)
       - target_kline_start_time : the candle being predicted (input + 1 interval)
       - predicted_close         : the model's forecast
+
+    Raises NoCandlesYet when no candle is stored yet. Any other error (for
+    example a model trained on other features) is a real fault and propagates.
     """
     # 1. The trained model (cached; reloaded only when a newer one was saved)
     model = load_model()
@@ -31,7 +38,7 @@ def predict_next_close_detailed(symbol=SYMBOL, n=1):
     col = get_collection(MONGO_COLLECTION)
     docs = list(col.find({"symbol": symbol}).sort("kline_start_time", -1).limit(n))
     if not docs:
-        raise ValueError("No candles in Mongo yet — run stream_live.py first.")
+        raise NoCandlesYet(f"no closed candle stored yet for {symbol}")
 
     # 3. Build the SAME features used in training, then predict
     df = pd.DataFrame(docs)

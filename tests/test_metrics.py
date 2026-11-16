@@ -11,6 +11,7 @@ from prometheus_client import REGISTRY
 
 import src.api.main as api
 from src.models.model_store import ModelUnavailable
+from src.models.predict_model import NoCandlesYet
 
 
 def request(method, path):
@@ -86,5 +87,26 @@ def test_a_crash_is_counted_as_500(monkeypatch):
     monkeypatch.setattr(api, "predict_next_close_detailed", crash)
     before = count("POST", "/predict", 500)
     with pytest.raises(RuntimeError):     # the server answers 500, then re-raises it for its log
+        request("POST", "/predict")
+    assert count("POST", "/predict", 500) == before + 1
+
+
+def test_predict_before_the_first_candle_is_counted_as_404(monkeypatch):
+    def no_candle(symbol):
+        raise NoCandlesYet("no closed candle stored yet")
+
+    monkeypatch.setattr(api, "predict_next_close_detailed", no_candle)
+    before = count("POST", "/predict", 404)
+    assert request("POST", "/predict")[0] == 404
+    assert count("POST", "/predict", 404) == before + 1
+
+
+def test_a_model_error_is_counted_as_500(monkeypatch):
+    def broken_input(symbol):
+        raise ValueError("Input X contains NaN.")
+
+    monkeypatch.setattr(api, "predict_next_close_detailed", broken_input)
+    before = count("POST", "/predict", 500)
+    with pytest.raises(ValueError):
         request("POST", "/predict")
     assert count("POST", "/predict", 500) == before + 1

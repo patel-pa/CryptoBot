@@ -11,7 +11,7 @@ from sqlalchemy import text
 from src.api import metrics
 from src.collection.stream_live import parse_tick
 from src.models.model_store import ModelUnavailable
-from src.models.predict_model import predict_next_close_detailed
+from src.models.predict_model import NoCandlesYet, predict_next_close_detailed
 from src.params.constants import (
     DEFAULT_WS_INTERVAL,
     MONGO_COLLECTION,
@@ -114,15 +114,17 @@ def predict(symbol: str = DEFAULT_SYMBOL):
     candle) so /predictions can chart predicted vs actual. The streamer calls
     this after each closed candle; readers use GET /predictions. Without a
     trained model this returns 503; /ready is not affected, because /charts
-    and /predictions still work.
+    and /predictions still work. 404 means no candle is stored yet. Anything
+    else (e.g. a model trained on other features) is a server error, 500, so
+    it shows in the error metrics instead of looking like a normal "not yet".
     """
     try:
         result = predict_next_close_detailed(symbol=symbol)
     except ModelUnavailable as e:
         print(f"/predict: {e}", flush=True)       # details (bucket, path) to the log only
         raise HTTPException(status_code=503, detail="No trained model is available yet.") from e
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+    except NoCandlesYet as e:
+        raise HTTPException(status_code=404, detail="No closed candle is stored yet.") from e
     save_prediction(result)
     return {
         "symbol": symbol,
