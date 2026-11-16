@@ -6,6 +6,16 @@ resource "kubernetes_namespace_v1" "env" {
     name = each.key
     labels = {
       "app.kubernetes.io/part-of" = "cryptobot"
+      # Pod Security "restricted": Kubernetes refuses any pod that may run as root, gain
+      # rights or reach into the node (privileged, host network or PID, hostPath). A deploy
+      # job may create pods in its namespace (ClusterRole edit) and dev and prod share the
+      # nodes, so without it a pod started from dev could read prod's secrets on a node.
+      # Every app pod meets it (k8s/base). warn: kubectl apply then names what a refused
+      # Deployment's pods lack, instead of a rollout that only times out.
+      "pod-security.kubernetes.io/enforce"         = "restricted"
+      "pod-security.kubernetes.io/enforce-version" = "v${local.cluster.kubernetes_version}"
+      "pod-security.kubernetes.io/warn"            = "restricted"
+      "pod-security.kubernetes.io/warn-version"    = "v${local.cluster.kubernetes_version}"
     }
   }
 

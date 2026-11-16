@@ -228,7 +228,7 @@ flowchart TB
 | Job `init-db` | applied by every deploy, idempotent; CD waits for it to finish, then for the rollouts |
 | ServiceAccounts `api`, `retrain` | EKS Pod Identity: one IAM role each (read the model / write the model); the other app pods (ServiceAccount `cryptobot`) get no AWS rights. The platform's controllers (Load Balancer Controller, External Secrets, the CloudWatch add-on's Fluent Bit) have their own roles (`infra/terraform/platform/controllers.tf`) |
 | ExternalSecrets | turn `cryptobot/<env>/*` from Secrets Manager into Kubernetes Secrets through the namespace's SecretStore (created by Terraform; dev's store can never read prod's secrets) |
-| Every app pod | runs as a non-root user, read-only root file system, no privilege escalation, all capabilities dropped |
+| Every app pod | runs as a non-root user, read-only root file system, no privilege escalation, all capabilities dropped; the namespaces `dev` and `prod` enforce Pod Security `restricted`, so Kubernetes refuses any pod that may run as root, gain privileges, keep capabilities or reach into the node (the read-only root file system is our own setting, not enforced) |
 | Monitoring | kube-prometheus-stack (Helm, installed by Terraform): a ServiceMonitor scrapes the API in `dev` and `prod`; Grafana loads the dashboards and the alert rule from `monitoring/` (details in [monitoring/README.md](../monitoring/README.md)) |
 | Logs | Fluent Bit (EKS CloudWatch add-on) sends every container's output to CloudWatch Logs |
 | Local copy | `k8s/overlays/local` runs the same base on kind, with PostgreSQL and MongoDB as pods |

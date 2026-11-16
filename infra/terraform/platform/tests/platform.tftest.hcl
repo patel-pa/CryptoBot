@@ -124,6 +124,16 @@ run "cluster_is_pinned_and_each_deploy_role_edits_only_its_namespace" {
   }
 
   assert {
+    condition = length(kubernetes_namespace_v1.env) == 2 && alltrue([
+      for ns in kubernetes_namespace_v1.env :
+      lookup(ns.metadata[0].labels, "pod-security.kubernetes.io/enforce", "") == "restricted" &&
+      lookup(ns.metadata[0].labels, "pod-security.kubernetes.io/enforce-version", "") == "v1.37" &&
+      lookup(ns.metadata[0].labels, "pod-security.kubernetes.io/warn", "") == "restricted"
+    ])
+    error_message = "dev and prod must enforce Pod Security \"restricted\": no privileged or host-level pods on the shared nodes."
+  }
+
+  assert {
     condition = { for name, addon in module.eks.cluster_addons : name => addon.addon_version } == {
       "vpc-cni"                = "v1.22.4-eksbuild.14"
       "eks-pod-identity-agent" = "v1.4.1-eksbuild.3"

@@ -51,6 +51,13 @@ Access entries only (no `aws-auth` ConfigMap). The CI roles `cryptobot-github-de
 namespace, plus a Role that allows `ExternalSecret` objects there. `edit` deliberately
 gives **no write rights** on External Secrets' resources (see the next section).
 
+`edit` does not limit what a pod may do, so both namespaces enforce the Pod Security Standard
+**`restricted`** (namespace labels, `kubernetes.tf`): Kubernetes refuses any pod that may run
+as root, gain rights or reach into the node (privileged, host network or PID, `hostPath`).
+dev and prod share the nodes, so this keeps a pod started from dev from reading prod's
+secrets on a node. Every app pod meets the standard (`k8s/base`); a deploy role cannot remove
+the labels, because namespaces belong to the whole cluster.
+
 ## How dev is kept from reading prod's passwords
 
 With Pod Identity, External Secrets has one identity for the whole cluster
@@ -69,7 +76,8 @@ role a namespace uses, and with which session tags, is set in its **SecretStore*
    `sessionTagsPolicy: Simple`, External Secrets sets those tags from the store.
 
 Lock 1 is needed: with the default policy `None`, a SecretStore may list any session tags by
-hand (External Secrets 2.14.0), including `esoNamespace=prod`.
+hand (External Secrets 2.14.0), including `esoNamespace=prod`. The other way to prod's
+passwords, through a pod on a shared node, is closed by Pod Security (previous section).
 
 ## One work session
 
