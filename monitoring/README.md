@@ -7,7 +7,7 @@ the alert. Both come from the Helm chart
 
 | File | What it is |
 |---|---|
-| `values.yaml` | The chart's settings: scrape the API, no Alertmanager, no unreachable control-plane targets, 2 days of data without a disk, Grafana's loaders for our dashboards and alert rules |
+| `values.yaml` | The chart's settings: scrape the API, no Alertmanager (nor the built-in rules that need it), no unreachable control-plane targets, 2 days of data without a disk, Grafana's loaders for our dashboards and alert rules |
 | `dashboards/api.json` | Grafana dashboard *CryptoBot / API*: traffic, 5xx errors, response times, forecasts stored, memory and CPU (from the API's `/metrics`) |
 | `dashboards/jobs.json` | Grafana dashboard *CryptoBot / Scheduled jobs and pods*: the latest result of `ingest` and `retrain`, time since their last success, next run, run durations, failed Jobs, pods not ready, restarts, memory |
 | `alerts/failed-jobs.yaml` | Grafana alert *Scheduled job failed*: the latest scheduled run of a CronJob failed |
@@ -93,7 +93,10 @@ starts, so a broken job would make the alert flap every 15 minutes (seen in a te
 There is no notification channel (e-mail, chat): the alert shows in Grafana, on the
 *Scheduled jobs* dashboard (the panel "Latest run of each scheduled job" uses the same
 test) and under Alerting. The chart's built-in Prometheus rules are evaluated too, but with
-Alertmanager switched off they only show in Grafana's alert list.
+Alertmanager switched off they only show in Grafana's alert list. The built-in rules that
+need an Alertmanager are switched off in `values.yaml`: its own rules (useless without it),
+`PrometheusNotConnectedToAlertmanagers` (always true without it), and `Watchdog` and
+`InfoInhibitor` (they fire on purpose to feed it), which would otherwise show as firing forever.
 
 **Test it** (namespace `cryptobot` on kind; `dev` on EKS): make `ingest` fail with an invalid
 setting and run it once by hand (or wait for its next scheduled run); the alert fires within

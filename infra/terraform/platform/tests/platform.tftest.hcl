@@ -287,9 +287,13 @@ run "monitoring_is_pinned_private_and_loads_every_dashboard_and_alert" {
       helm_release.kube_prometheus_stack.values[0] == file("${local.monitoring_dir}/values.yaml") &&
       yamldecode(helm_release.kube_prometheus_stack.values[0]).alertmanager.enabled == false &&
       yamldecode(helm_release.kube_prometheus_stack.values[0]).grafana.sidecar.datasources.alertmanager.enabled == false &&
+      yamldecode(helm_release.kube_prometheus_stack.values[0]).defaultRules.rules.alertmanager == false &&
+      yamldecode(helm_release.kube_prometheus_stack.values[0]).defaultRules.disabled == {
+        PrometheusNotConnectedToAlertmanagers = true, Watchdog = true, InfoInhibitor = true
+      } &&
       yamldecode(helm_release.kube_prometheus_stack.values[0]).grafana.sidecar.alerts.enabled == true
     )
-    error_message = "EKS must use kind's settings file: no Alertmanager (nor a Grafana data source pointing to it), Grafana's alert loader on."
+    error_message = "EKS must use kind's settings file: no Alertmanager (nor a Grafana data source or built-in rules that need it), Grafana's alert loader on."
   }
 
   assert {
