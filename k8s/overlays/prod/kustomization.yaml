@@ -30,7 +30,7 @@ configMapGenerator:
       # may write only prod/* (envs/prod, output model_s3).
       - MODEL_S3_BUCKET=cryptobot-models-patel-pa
       - MODEL_S3_KEY=prod/model.pkl
-      - AWS_REGION=eu-central-1             # boto3 has no default region
+      - AWS_DEFAULT_REGION=eu-central-1     # boto3 reads this name (not AWS_REGION); without it, us-east-1
       # History since a fixed date (dev: only the last day). Loaded once, on the very first
       # create; after a restore from a snapshot the ingest job fetches only the gap.
       - HISTORICAL_START_DATE=01.10.2026T00:00
