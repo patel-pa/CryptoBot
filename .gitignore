@@ -1,103 +1,33 @@
-# Byte-compiled / optimized / DLL files
+# Python caches
 __pycache__/
 *.py[cod]
 
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-env/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
-
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-
-# Translations
-*.mo
-*.pot
-
-# Django stuff:
-*.log
-
-# Sphinx documentation
-docs/_build/
-
-# PyBuilder
-target/
-
-# DotEnv configuration
-.env
-
-# Database
-*.db
-*.rdb
-
-# Pycharm
-.idea
-
-# VS Code
-.vscode/
-
-# Spyder
-.spyproject/
-
-# Jupyter NB Checkpoints
-.ipynb_checkpoints/
-
-# exclude data from source control by default
-/data/
-
-# Mac OS-specific storage files
-.DS_Store
-
-# vim
-*.swp
-*.swo
-
-# Mypy cache
-.mypy_cache/
-
-# Ruff cache
+# Test and lint caches
+.pytest_cache/
 .ruff_cache/
 
-# Virtual Environment
+# Virtual environments
 .venv/
 venv/
 
-# Others
-PROJECT_CONTEXT.md
-cryptobot_timeline*
+# Local settings with passwords (see .env.example)
+.env
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# Logs
+*.log
+
+# Local data, never in source control
+/data/
 
 # Local Kubernetes (kind) passwords: real values, never committed (see *.env.example)
 k8s/overlays/local/*.env
@@ -105,8 +35,9 @@ k8s/overlays/local/*.env
 # Written at deploy time: names the image in ECR, whose address contains the AWS account ID
 /k8s/deploy/
 
-# Trained models are build output, not source: S3 on AWS, a local file otherwise.
-models/*.pkl
+# Trained models are build output, not source: S3 on AWS, a local file otherwise. The
+# whole folder, so a temporary file left by an interrupted save stays out too.
+/models/
 
 # Terraform: downloaded providers, local state and saved plans never go into Git
 # (state lives in S3). The provider lock file .terraform.lock.hcl IS committed.
@@ -116,8 +47,6 @@ models/*.pkl
 tfplan
 *.tfplan
 *_override.tf
-crash.log
 
-# Keep the ENTIRE references/ directory LOCAL only — phase reports, defense
-# deck, course notes stay on disk but are never pushed to the CV repo.
+# Local notes, never published
 /references/
