@@ -9,6 +9,7 @@ import json
 import time
 from datetime import datetime
 
+import pandas as pd
 import pytest
 from fastapi import HTTPException
 from pymongo.errors import ServerSelectionTimeoutError
@@ -18,6 +19,7 @@ import src.api.main as api
 from src.models.model_store import ModelUnavailable
 from src.models.predict_model import NoCandlesYet
 from src.storage import mongo, postgres
+from tests.asgi import request
 
 
 def ok():
@@ -159,3 +161,52 @@ def test_a_model_error_is_not_turned_into_404(monkeypatch):
     monkeypatch.setattr(api, "predict_next_close_detailed", wrong_features)
     with pytest.raises(ValueError, match="6 features"):    # the server turns it into a 500
         api.predict()
+
+
+@pytest.fixture
+def limits_asked(monkeypatch):
+    """Fake databases for /charts and /predictions: no rows; each limit is recorded."""
+    asked = []
+
+    def read_sql(query, engine, params):
+        asked.append(params["n"])
+        return pd.DataFrame()
+
+    class NoForecasts:
+        def find(self, query):
+            return self
+
+        def sort(self, key, direction):
+            return self
+
+        def limit(self, n):
+            asked.append(n)
+            return []
+
+    monkeypatch.setattr(api, "get_engine", lambda: None)
+    monkeypatch.setattr(api.pd, "read_sql", read_sql)
+    monkeypatch.setattr(api, "get_collection", lambda name: NoForecasts())
+    return asked
+
+
+@pytest.mark.parametrize("path, query", [
+    ("/charts", "limit=-1"),            # Postgres would fail: a 500 before the bounds
+    ("/charts", "limit=0"),
+    ("/charts", "limit=1001"),
+    ("/predictions", "limit=0"),        # MongoDB reads limit(0) as "no limit"
+    ("/predictions", "limit=1441"),
+])
+def test_a_limit_out_of_range_is_422_before_any_database_call(limits_asked, path, query):
+    assert request("GET", path, query)[0] == 422
+    assert limits_asked == []
+
+
+@pytest.mark.parametrize("path, query, limit", [
+    ("/charts", "limit=1", 1),
+    ("/charts", "limit=1000", 1000),
+    ("/predictions", "limit=1", 1),
+    ("/predictions", "limit=1440", 1440),
+])
+def test_a_limit_at_the_bounds_reaches_the_database(limits_asked, path, query, limit):
+    assert request("GET", path, query)[0] == 200
+    assert limits_asked == [limit]

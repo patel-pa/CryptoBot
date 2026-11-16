@@ -387,9 +387,9 @@ Steps, times and test results: [docs/disaster-recovery.md](docs/disaster-recover
 |---|---|---|---|
 | `/health` | GET | — | Liveness: the API process is up (no database calls) |
 | `/ready` | GET | PostgreSQL + MongoDB | Readiness: 200 if both databases answer, else 503 |
-| `/charts` | GET | PostgreSQL | Historical OHLCV for charting |
+| `/charts` | GET | PostgreSQL | Historical OHLCV for charting (`limit` 1–1000, default 100) |
 | `/predict` | POST | MongoDB + model | Forecasts the next candle's close and stores it; the streamer calls it after each closed candle |
-| `/predictions` | GET | MongoDB | Stored forecasts joined with actual closes (predicted-vs-actual) |
+| `/predictions` | GET | MongoDB | Stored forecasts joined with actual closes (predicted-vs-actual; `limit` 1–1440, default 240) |
 | `/stream` | WebSocket | Binance (live) | Real-time tick feed relayed to the browser |
 | `/metrics` | GET | — | Prometheus metrics: requests and durations per route and status, plus Python/process stats (for monitoring, not listed in `/docs`) |
 

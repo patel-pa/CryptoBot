@@ -1,9 +1,10 @@
 import asyncio
 import json
+from typing import Annotated
 
 import pandas as pd
 import websockets
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
@@ -33,6 +34,12 @@ DEFAULT_SYMBOL = SUPPORTED_SYMBOLS[0].value
 # Upper bound for each /ready check. A Kubernetes readiness probe must answer
 # quickly; the probe's own timeout (set in the manifests) is a bit higher.
 READY_TIMEOUT_SECONDS = 2.0
+
+# The most rows one request may ask for: enough for the dashboard (up to 500
+# candles, 240 forecasts), small enough that no request can fill the pod's
+# memory. A limit outside 1..max is answered 422 before any database call.
+MAX_CHART_ROWS = 1000
+MAX_PREDICTION_ROWS = 1440       # one day of 1-minute forecasts
 
 
 @app.get("/health")
@@ -95,7 +102,8 @@ async def ready():
 
 
 @app.get("/charts")
-def charts(symbol: str = DEFAULT_SYMBOL, limit: int = 100):
+def charts(symbol: str = DEFAULT_SYMBOL,
+           limit: Annotated[int, Query(ge=1, le=MAX_CHART_ROWS)] = 100):
     """Recent historical candles from Postgres, oldest -> newest (for charting)."""
     query = text(
         f"SELECT * FROM {POSTGRES_TABLE} WHERE symbol = :s "
@@ -134,7 +142,8 @@ def predict(symbol: str = DEFAULT_SYMBOL):
 
 
 @app.get("/predictions")
-def predictions(symbol: str = DEFAULT_SYMBOL, limit: int = 240):
+def predictions(symbol: str = DEFAULT_SYMBOL,
+                limit: Annotated[int, Query(ge=1, le=MAX_PREDICTION_ROWS)] = 240):
     """Recent stored forecasts, each joined with the candle's ACTUAL close.
 
     Rows are oldest -> newest, with fields:

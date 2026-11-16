@@ -1,38 +1,14 @@
 """Tests for GET /metrics and the request metrics (src/api/metrics.py).
 
-Requests go through the real app, middleware included. A small helper plays
-the web server (ASGI is the interface between a Python web app and its
-server), so no HTTP client library is needed.
+Requests go through the real app, middleware included (tests/asgi.py).
 """
-import asyncio
-
 import pytest
 from prometheus_client import REGISTRY
 
 import src.api.main as api
 from src.models.model_store import ModelUnavailable
 from src.models.predict_model import NoCandlesYet
-
-
-def request(method, path):
-    """Send one HTTP request to the app; return (status, headers, body)."""
-    scope = {
-        "type": "http", "method": method, "path": path, "raw_path": path.encode(),
-        "query_string": b"", "headers": [], "http_version": "1.1", "scheme": "http",
-        "server": ("test", 80), "client": ("test", 1234), "root_path": "",
-    }
-    sent = []
-
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message):
-        sent.append(message)
-
-    asyncio.run(api.app(scope, receive, send))
-    start = next(m for m in sent if m["type"] == "http.response.start")
-    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
-    return start["status"], dict(start["headers"]), body
+from tests.asgi import request
 
 
 def count(method, route, status):
