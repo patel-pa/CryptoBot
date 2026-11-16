@@ -25,4 +25,5 @@ models/*.pkl
 # Not needed inside the runtime image
 notebooks
 references
+docs
 *.md
