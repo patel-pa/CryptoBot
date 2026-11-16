@@ -20,7 +20,7 @@ outputs (the CI role ARNs and the log group names) from that layer's state, read
 | AWS Load Balancer Controller | Helm chart 3.6.2, `kube-system`, own Pod Identity role | Turns the dashboard's Ingress into one ALB |
 | External Secrets | Helm chart 2.14.0, `external-secrets`, own Pod Identity role | Copies each environment's database passwords from Secrets Manager into Kubernetes |
 | CloudWatch observability add-on | v7.0.1, container logs only (Fluent Bit; no CloudWatch agent pods), own Pod Identity role | Container logs into the bootstrap layer's log groups (7 days); its metrics features are off |
-| Monitoring | Helm chart kube-prometheus-stack 93.3.0, `monitoring`, settings from `monitoring/values.yaml`; our dashboards and alert rule as ConfigMaps, built from `monitoring/kustomization.yaml` (`monitoring.tf`) | Prometheus and Grafana: dashboards and the failed-job alert, the same as on kind. No AWS rights, no disks, no load balancer (see `monitoring/README.md`) |
+| Monitoring | Helm chart kube-prometheus-stack 93.3.0, `monitoring`, settings from `monitoring/values.yaml`; our dashboards and alert rule as ConfigMaps, built from `monitoring/kustomization.yaml` (`monitoring.tf`) | Prometheus and Grafana: dashboards and the failed-job alert, the same as on kind. No AWS rights, no persistent volumes (EBS), no load balancer (see `monitoring/README.md`) |
 
 Subnet tags tell the AWS Load Balancer Controller where to put load balancers:
 `kubernetes.io/role/elb` (public) and `kubernetes.io/role/internal-elb` (private).
@@ -111,10 +111,11 @@ routes, so it can still delete the ALB of an Ingress forgotten in them (not in a
 namespace). Check afterwards that no ALB is left.
 
 Then destroy `envs/dev` and `envs/prod` with their own plan and apply (`envs/prod` in two
-steps, and its final snapshots stay on purpose: see its README), and then this layer (see above). The container log groups belong to the bootstrap
-layer and stay (7 days). No PersistentVolumeClaims, so no EBS volumes are left behind (the
-monitoring stack keeps its data on the pods' own disks, and Grafana is reached through
-`kubectl port-forward`, not a load balancer).
+steps, and its final snapshots stay on purpose: see its README), and then this layer (see
+above). The container log groups belong to the bootstrap layer and stay (7 days). No
+PersistentVolumeClaims, so no EBS volumes are left behind (the monitoring stack keeps its data
+on the pods' own disks, and Grafana is reached through `kubectl port-forward`, not a load
+balancer).
 
 ## Pod budget
 
@@ -125,12 +126,13 @@ External Secrets ×3, and Prometheus, Grafana, kube-state-metrics and the Promet
 (11). The apps need 7 (dev 3, prod 4), and a deploy adds a few for a moment: `init-db`, a new
 API and dashboard pod before the old ones stop, and the Job pods of `ingest` and `retrain`
 (finished pods don't count). With two nodes that peak was 33 of 34 pods (35 at 03:00 UTC,
-when `retrain` runs too), hence the third node. Memory: the monitoring stack requests about 1.3 GiB (Grafana with its three loaders
-~0.7, Prometheus ~0.4) and the apps about 1.8 GiB, of roughly 9.7 GiB the three nodes offer
-to pods (4 GiB each minus what EKS reserves for the kubelet and the system; the exact value is
-"Allocatable" in `kubectl describe node`). VPC CNI prefix delegation would raise the pod limit
-at no cost, but it adds no memory or CPU: up to 110 pods would share each node's memory, with
-the kubelet's reservation still sized for 17.
+when `retrain` runs too), hence the third node. Memory: the monitoring stack requests about
+1.3 GiB (Grafana with its three loaders ~0.7, Prometheus ~0.4) and the apps about 1.8 GiB, of
+roughly 9.7 GiB the three nodes offer to pods (measured on 15 Nov 2026: 3.22 GiB and 17 pods
+per node, after EKS reserves 442 MiB for the kubelet and keeps 100 MiB free before it evicts
+pods; "Allocatable" in `kubectl describe node`). VPC CNI prefix delegation would raise the pod
+limit at no cost, but it adds no memory or CPU: up to 110 pods would share each node's memory,
+with the kubelet's reservation still sized for 17.
 
 ## Cost while it exists (Frankfurt list prices)
 

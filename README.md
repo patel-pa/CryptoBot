@@ -1,34 +1,60 @@
 # CryptoBot — Real-Time & Batch Data Pipeline for Crypto Market Data
 
-An end-to-end data engineering platform that ingests Binance BTC/USDT market data through **two independent pipelines** — a batch pipeline for historical candles and a real-time streaming pipeline for live ticks — stores each in a fit-for-purpose database, trains an ML model to forecast the next candle, and serves everything through a REST API and a live Streamlit dashboard. The full stack is containerized and covered by CI.
+An end-to-end data engineering platform that ingests Binance BTC/USDT market data through **two independent pipelines** — a batch pipeline for historical candles and a real-time streaming pipeline for live ticks — stores each in a fit-for-purpose database, trains an ML model to forecast the next candle, and serves everything through a REST API and a live Streamlit dashboard. The full stack is containerized and covered by CI. Version 2 runs it in production on Amazon EKS with managed databases, built by Terraform and delivered by GitHub Actions (below).
 
 > Built solo as the capstone Data Engineering project for the DataScientest / Liora Data Engineer programme — designed, implemented, and delivered end-to-end.
 
-## v2 in progress
+## v2: production on AWS
 
-Version 2 moves the platform to AWS: Amazon EKS, Amazon RDS for PostgreSQL and Amazon DocumentDB, all infrastructure built by Terraform, delivery by GitHub Actions. The dev path (push to `dev` → tests → vulnerability scan → deploy to EKS) has run end to end on AWS; the prod path (merge into `main` → approval → the same image, by digest) was rehearsed once on AWS on 13 Nov 2026, including the teardown with final snapshots and the restore from them. The AWS environments exist only during work sessions: Terraform creates and destroys them to keep the cost low. Monitoring with Prometheus and Grafana (dashboards, an alert on failed scheduled jobs) runs on a local kind cluster and is installed with the platform layer on AWS (to be proven in the next AWS session); the disaster-recovery documentation is still to come. The finished Data Engineering version (v1) is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
+Version 2 runs the platform the way a production system runs: on **Amazon EKS** with **Amazon RDS for PostgreSQL** and **Amazon DocumentDB**, the infrastructure built by **Terraform**, and delivery automated by **GitHub Actions**: every push to `dev` is tested, scanned and deployed to the `dev` namespace; a merge into `main` deploys the same image to `prod` after approval. Prometheus and Grafana monitor both environments and raise an alert when a scheduled job fails. The whole path was proven on AWS on 15 Nov 2026: the platform and both environments built from scratch, prod restored from its snapshots with no data lost, both environments deployed by CD, the alert fired and cleared, a node and a container killed without downtime in prod, prod rolled back and forward, then everything torn down again. The AWS environments exist only during work sessions: Terraform creates and destroys them to keep the cost low.
+
+More detail: [architecture](docs/architecture.md) (four diagrams) · [disaster recovery](docs/disaster-recovery.md) · [monitoring](monitoring/README.md). The finished Data Engineering version (v1) is release [v1.0-data-engineering](https://github.com/patel-pa/CryptoBot/releases/tag/v1.0-data-engineering).
 
 ---
 
 ## Architecture
 
-Two pipelines that converge at a single serving layer (FastAPI + Streamlit):
+Two pipelines that converge at a single serving layer (FastAPI + Streamlit): a batch pipeline (Binance REST → PostgreSQL, every 15 minutes) and a streaming pipeline (Binance WebSocket → MongoDB, every closed 1-minute candle, followed by a forecast). Daily, a job retrains the model on the history and stores it in S3. On AWS:
 
-```
-Binance REST API   ──► clean ──► PostgreSQL (ohlcv_data) ──► ML training ──► model.pkl
-                                                         └──► FastAPI /charts ──► dashboard
+```mermaid
+flowchart LR
+    dev(["git push"]) --> gh["GitHub Actions<br/>CI: lint, tests, scans<br/>CD: build, Trivy, deploy"]
+    gh -- "image, tag = commit SHA" --> ecr
+    gh -- "dev automatically,<br/>prod after approval" --> eks
 
-Binance WebSocket  ──► Path A (every tick) ─────────────────► FastAPI /stream ──► live chart
-                   └─► Path B (on candle close) ──► MongoDB (closed_candles) ──► ML predict ──► FastAPI /predict
+    subgraph aws["AWS, eu-central-1"]
+        ecr[("Amazon ECR")]
+        alb["ALB per environment"]
+        subgraph eks["Amazon EKS, 3 nodes"]
+            app["namespaces dev and prod<br/>API, streamer, dashboard,<br/>CronJobs ingest and retrain"]
+            mon["namespace monitoring<br/>Prometheus, Grafana"]
+        end
+        rds[("RDS PostgreSQL<br/>candle history")]
+        docdb[("DocumentDB<br/>live candles, forecasts")]
+        s3[("S3<br/>model versions")]
+        sm["Secrets Manager"]
+    end
+
+    ecr --> app
+    user(["Browser"]) --> alb --> app
+    app -- "fetches market data" --> binance(["Binance REST and WebSocket"])
+    app --> rds
+    app --> docdb
+    app --> s3
+    sm -. "External Secrets" .-> app
+    mon -. "scrapes /metrics" .-> app
 ```
+
+Each environment has its own databases, secrets and model; the four detailed views (application components, CI/CD pipeline, AWS infrastructure, Kubernetes objects) are in [docs/architecture.md](docs/architecture.md). Locally, `docker compose` runs the same services with PostgreSQL and MongoDB containers.
 
 **Why two databases?** The two sources are fundamentally different, so they get different storage:
 
 | | REST API (historical) | WebSocket (live) |
 |---|---|---|
 | Shape | Fixed 12-field candles, stable schema | High-frequency, semi-structured messages |
-| Cadence | Batch (daily top-ups) | ~1 message/second, pushed |
+| Cadence | Batch (every 15 minutes) | ~1 message every 2 seconds per symbol (1-minute candles), pushed |
 | Store | **PostgreSQL** — schema enforcement, `NUMERIC(18,8)` exact prices, ordered time-series queries | **MongoDB** — high write throughput, flexible JSON, no migrations |
+| On AWS | Amazon RDS for PostgreSQL | Amazon DocumentDB (MongoDB-compatible, TLS) |
 
 ---
 
@@ -36,13 +62,15 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 
 **Languages & core:** Python 3.11
 **Ingestion:** Binance REST API, Binance WebSocket (`websocket-client`, `websockets`)
-**Storage:** PostgreSQL (SQLAlchemy 2, psycopg2), MongoDB (PyMongo)
+**Storage:** PostgreSQL (SQLAlchemy 2, psycopg2) on Amazon RDS, MongoDB API (PyMongo) on Amazon DocumentDB; the model in Amazon S3 (versioned)
 **Serving:** FastAPI + Uvicorn
 **Dashboard:** Streamlit + Plotly
 **ML:** scikit-learn, pandas, joblib
-**Scheduling:** two commands, `python -m src.cli ingest` and `retrain`, run as Kubernetes CronJobs in v2 (run on EKS dev); v1.0 used Apache Airflow
-**Infra & CI/CD:** Docker, docker-compose, Terraform on AWS, GitHub Actions (CI: ruff + pytest, image build + Trivy scan, Kubernetes manifest validation, Terraform tests, workflow linting; CD: tests, Trivy scan, push to Amazon ECR via OIDC, deploy to the dev namespace on EKS; merges into `main` go to the prod namespace after approval, with the same image by digest (rehearsed once, 13 Nov 2026); manual deploy or rollback by SHA)
-**Testing:** pytest
+**Scheduling:** two commands, `python -m src.cli ingest` and `retrain`, run as Kubernetes CronJobs; v1.0 used Apache Airflow
+**Platform:** Amazon EKS (Kubernetes 1.37, 3 × t3.medium), Kustomize (base + dev / prod / local overlays), Helm for the add-ons (AWS Load Balancer Controller, External Secrets Operator, kube-prometheus-stack), EKS Pod Identity, AWS Secrets Manager; kind for local Kubernetes
+**Monitoring:** Prometheus, Grafana (dashboards and alert as code), CloudWatch Logs (Fluent Bit)
+**Infra & CI/CD:** Docker, Docker Compose, Terraform on AWS, GitHub Actions (CI: ruff + pytest, image build + Trivy scan, Kubernetes manifest validation, Terraform tests, workflow linting; CD: tests, Trivy scan, push to Amazon ECR via OIDC, deploy to the dev namespace on EKS; merges into `main` go to the prod namespace after approval, with the same image by digest; manual deploy or rollback by SHA)
+**Testing and security tools:** pytest, Terraform mock-provider tests, kubeconform, Trivy, Dependabot, actionlint, zizmor
 
 ---
 
@@ -51,11 +79,11 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 - **Idempotent ingestion** — the batch pipeline uses `ON CONFLICT (symbol, open_time) DO NOTHING`; the stream pipeline uses a unique index on `(symbol, kline_start_time)` + upsert. Re-runs and overlapping ranges never create duplicates.
 - **Incremental / resumable loading** — before fetching, the collector reads `MAX(close_time)` from PostgreSQL and resumes 1 ms after the last stored candle, so the same script serves both the initial backfill and scheduled top-ups.
 - **Pagination** — handles Binance's 1,000-candle-per-request limit by advancing `startTime` until a partial page signals the present has been reached.
-- **Scheduled jobs** — two commands keep the system current: `python -m src.cli ingest` re-runs the idempotent collector, and `python -m src.cli retrain` catches the data up and retrains the model. On Kubernetes they run as CronJobs, every 15 minutes and daily (proven on EKS dev); in docker compose, `historical` runs `ingest` on every `up` and `retrain` is run by hand. The API picks up a newer model by itself (S3 on AWS, a local file in docker compose), no restart needed. Each command's exit code tells the scheduler whether it failed.
-- **Verified data quality** — **~240,000+** one-minute BTC/USDT candles loaded with **0 gaps** (and growing with every ingest run), confirmed by a verification notebook (`open_time[n+1] == close_time[n] + 1 ms`).
+- **Scheduled jobs** — two commands keep the system current: `python -m src.cli ingest` re-runs the idempotent collector, and `python -m src.cli retrain` catches the data up and retrains the model. On Kubernetes they run as CronJobs, every 15 minutes and daily (proven on EKS); in docker compose, `historical` runs `ingest` on every `up` and `retrain` is run by hand. The API picks up a newer model by itself (S3 on AWS, a local file in docker compose), no restart needed. Each command's exit code tells the scheduler whether it failed.
+- **Verified data quality** — no gaps, checked twice: in v1, notebook 03 counted **288,238** one-minute BTC/USDT candles (1 Jan–20 Jul 2026) with **0 missing and 0 gaps** (every `open_time` one minute after the previous one, expected count = actual count); in v2 prod (history since 1 Oct 2026), the restore test on 15 Nov 2026 counted **65,760** candles and **0 missing minutes** ([disaster recovery](docs/disaster-recovery.md)).
 - **Predicted-vs-actual tracking** — every `/predict` call is persisted, so `/predictions` can join each forecast against the candle's real close for later evaluation.
 - **CI on every push** (every branch except `main`) — GitHub Actions runs every check that needs no AWS: ruff and the pytest suite, the image build and its Trivy scan (the same steps CD runs, so on `dev` only CD runs them), the three Kustomize overlays and `monitoring/` rendered and validated against the Kubernetes 1.37 API (kubeconform, strict), a Trivy misconfiguration scan of the Terraform code and the dev/prod manifests (fails on CRITICAL; the accepted findings are listed with their reasons in `.trivyignore.yaml`), and actionlint + zizmor on the workflows. Each Terraform folder gets `fmt -check`, `validate` and its mock-provider tests.
-- **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA, then deployed to the `dev` namespace on EKS (skipped while no cluster runs); started by hand, it deploys or rolls back to any image already in ECR without rebuilding. A merge into `main` waits for approval, checks that `main` holds exactly the tested dev commit's files, and deploys that commit's image by digest to the `prod` namespace (rehearsed once, 13 Nov 2026). GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
+- **CD on every push to `dev`** — the image is tested (ruff + pytest), scanned with Trivy (any CRITICAL vulnerability stops it) and pushed to Amazon ECR under the commit SHA, then deployed to the `dev` namespace on EKS (skipped while no cluster runs); started by hand, it deploys or rolls back to any image already in ECR without rebuilding. A merge into `main` waits for approval, checks that `main` holds exactly the tested dev commit's files, and deploys that commit's image by digest to the `prod` namespace. GitHub signs in to AWS with short-lived OIDC credentials, no stored keys.
 
 ---
 
@@ -64,28 +92,30 @@ Binance WebSocket  ──► Path A (every tick) ──────────�
 ```
 src/
 ├── cli.py          # scheduled jobs: python -m src.cli ingest | retrain
+├── config.py       # every setting from environment variables
 ├── collection/     # fetch_historical.py (REST→PG), stream_live.py (WS→Mongo)
 ├── storage/        # postgres.py, mongo.py, schema.sql, init_db.py, *_writer.py
 ├── features/       # build_features.py
-├── models/         # train_model.py, predict_model.py
+├── models/         # train_model.py, predict_model.py, model_store.py (the model in S3 or a local file)
 ├── api/            # main.py (FastAPI: /charts, /stream, /predict, /predictions, /health, /ready, /metrics), metrics.py
 ├── visualization/  # app.py (Streamlit dashboard: historical + live + predictions)
 ├── params/         # constants, enums
-└── utils/          # time / url / dataframe helpers
+└── utils/          # retry, time, url and dataframe helpers
 k8s/                # Kubernetes manifests (Kustomize): base/ + overlays/local (kind), overlays/dev and overlays/prod (EKS)
 monitoring/         # Prometheus + Grafana (Helm chart kube-prometheus-stack): chart settings, Grafana dashboards (JSON), the failed-job alert
 infra/terraform/    # AWS infrastructure: bootstrap/ (created once, kept), platform/, envs/dev/ and envs/prod/ (destroyed after every session; prod leaves a final snapshot and is restored from it); modules/environment/ = the databases, secrets and roles of one environment, shared by envs/dev and envs/prod
+docs/               # architecture.md (four diagrams), disaster-recovery.md
 tests/              # pytest suite
-notebooks/          # exploration + verification (to re-run: pip install -r requirements-docker.txt ipykernel)
+notebooks/          # 01-02 explore the Binance APIs, 03-05 check the local databases (need docker compose up); to re-run: Python 3.11, pip install -r requirements-docker.txt ipykernel, open them from notebooks/
 .github/            # actions/test-build-scan: tests, image, Trivy scan (used by CI and CD); workflows/: CI (ci.yml, terraform.yml), CD (cd.yml): every push to dev → tests, image, Trivy scan, push to ECR, deploy to dev; every merge of dev into main → approval → the same image to prod (by digest); deploys skip while no cluster runs; by hand: deploy or roll back; rulesets/: what GitHub refuses on main, dev and the v1 tag
-docker-compose.yml  # full stack: postgres, mongo, init, historical, streamer, api, dashboard
+docker-compose.yml  # full stack: postgres, mongodb, init, historical, streamer, api, dashboard
 ```
 
 ---
 
 ## Getting started
 
-**Prerequisites:** Docker and docker-compose.
+**Prerequisites:** Docker with the Compose plugin (`docker compose`).
 
 ### 1. Configure environment
 
@@ -152,7 +182,7 @@ The `ingest` (every 15 min) and `retrain` (daily) CronJobs also run on their own
 
 ## Deploy to dev on EKS
 
-The same manifests in the `dev` namespace of the EKS cluster: `k8s/overlays/dev` adds the database connection details from AWS Secrets Manager (External Secrets), TLS to RDS and DocumentDB, the model in S3, and the dashboard behind an ALB. Needs the Terraform layers `platform` and then `envs/dev` applied (see their READMEs; pods get their AWS rights only if `envs/dev` exists when they start), the app image in ECR (the CD workflow pushes it after a successful run on `dev`, tagged with the full commit SHA), and kubectl within one minor version of the cluster (1.36–1.38).
+The same manifests in the `dev` namespace of the EKS cluster: `k8s/overlays/dev` adds the database connection details from AWS Secrets Manager (External Secrets), TLS to RDS and DocumentDB, the model in S3, and the dashboard behind an ALB. Needs the Terraform layers [`platform`](infra/terraform/platform/README.md) and then [`envs/dev`](infra/terraform/envs/dev/README.md) applied (pods get their AWS rights only if `envs/dev` exists when they start), the app image in ECR (the CD workflow pushes it after a successful run on `dev`, tagged with the full commit SHA), and kubectl within one minor version of the cluster (1.36–1.38). Once per AWS account, before all of this: apply the [`bootstrap`](infra/terraform/bootstrap/README.md) layer (state bucket, GitHub roles, ECR, model bucket) and set the repository secret `AWS_ACCOUNT_ID` (its README).
 
 ### With CD (the normal way)
 
@@ -222,14 +252,14 @@ Until the first `retrain` has uploaded a model, `POST /predict` answers 503 and 
 gh run list --workflow cd.yml --limit 3                       # every line ✓, X or - (none with *)
 kubectl delete -k k8s/overlays/dev --ignore-not-found         # the Load Balancer Controller deletes the ALB
 aws elbv2 describe-load-balancers --region eu-central-1 \
-  --query "LoadBalancers[].LoadBalancerName"                  # repeat until []
+  --query "LoadBalancers[].LoadBalancerName"                  # repeat until no cryptobot-dev
 ```
 
-Then destroy `envs/dev`, and `platform` once `envs/dev` and `envs/prod` (whichever ran) are destroyed (their READMEs).
+Then destroy [`envs/dev`](infra/terraform/envs/dev/README.md), and [`platform`](infra/terraform/platform/README.md) once `envs/dev` and `envs/prod` (whichever ran) are destroyed.
 
 ## Deploy to prod on EKS
 
-The same app in the `prod` namespace of the same cluster: `k8s/overlays/prod` is the dev overlay with prod's values (secrets `cryptobot/prod/*`, model `prod/model.pkl`, its own ALB `cryptobot-prod`, two API pods, the history since 1 Oct 2026). Needs the Terraform layers `platform` and then `envs/prod` applied (its README: the very first create, the restore from the newest final snapshot, the teardown in two steps). **After a restore, plan and apply `envs/prod` once more before deploying:** that second apply gives the restored DocumentDB its new password (a restored DocumentDB keeps the snapshot's old one; the plan shows exactly one change). Prod is deployed only from `main`, after your approval, with the image that was built, tested and scanned on `dev`: nothing is built for prod.
+The same app in the `prod` namespace of the same cluster: `k8s/overlays/prod` is the dev overlay with prod's values (secrets `cryptobot/prod/*`, model `prod/model.pkl`, its own ALB `cryptobot-prod`, two API pods, the history since 1 Oct 2026). Needs the Terraform layers `platform` and then [`envs/prod`](infra/terraform/envs/prod/README.md) applied (its README: the very first create, the restore from the newest final snapshot, the teardown in two steps). **After a restore, plan and apply `envs/prod` once more before deploying:** that second apply gives the restored DocumentDB its new password (a restored DocumentDB keeps the snapshot's old one; the plan shows exactly one change). Prod is deployed only from `main`, after your approval, with the image that was built, tested and scanned on `dev`: nothing is built for prod.
 
 ### Once, before the first merge: the GitHub environment `production`
 
@@ -237,6 +267,7 @@ A workflow that names an environment that does not exist yet makes GitHub create
 
 - **Required reviewers:** you. Leave "Prevent self-review" off: you approve your own merges.
 - **Deployment branches and tags:** "Selected branches and tags" → add the branch `main`. This is the lock that matters: the AWS role `cryptobot-github-deploy-prod` trusts every job in this environment (bootstrap README).
+
 ### Rulesets on `main`, `dev` and the v1 tag
 
 Three rulesets (Settings → Rules → Rulesets), kept as files in `.github/rulesets/` and created from them with `gh api` (below). Nobody may bypass them, the repository owner included.
@@ -297,6 +328,34 @@ Then destroy `envs/prod` in its two steps (its README). Its **final snapshots st
 
 ---
 
+## Dev and prod: what differs
+
+Both environments run the same image and the same base manifests (`k8s/base`); only these values differ.
+
+| Setting | dev | prod | Where |
+|---|---|---|---|
+| Kubernetes namespace | `dev` | `prod` | `k8s/overlays/<env>/kustomization.yaml` |
+| API pods | 1 | 2, spread over the nodes, PodDisruptionBudget (at least 1) | `k8s/overlays/prod/` |
+| History on an empty database | the last day (`HISTORICAL_LOOKBACK_DAYS=1`) | since 1 Oct 2026 (`HISTORICAL_START_DATE`) | overlay ConfigMap |
+| Secrets in Secrets Manager | `cryptobot/dev/*` | `cryptobot/prod/*` (dev's SecretStore can never read them) | `external-secrets.yaml`, `infra/terraform/envs/<env>` |
+| Model in S3 | `dev/model.pkl` | `prod/model.pkl` | overlay ConfigMap, pod roles |
+| Load balancer | ALB `cryptobot-dev` | ALB `cryptobot-prod` | `ingress.yaml` |
+| PostgreSQL (RDS) | `db.t4g.micro` | `db.t4g.small` | `infra/terraform/envs/<env>/main.tf` |
+| DocumentDB | `db.t4g.medium` (the smallest offered) | `db.t4g.medium` | same |
+| Automated backups | 1 day | 7 days | same |
+| Deletion protection | off | on | same |
+| When the environment is destroyed | deleted; starts empty next time and reloads the last day | final snapshot of both databases; restored on the next create | `infra/terraform/modules/environment` |
+| Deployed by | every push to `dev` | a merge into `main`, after approval (GitHub environment `production`) | `.github/workflows/cd.yml` |
+| Image | built, tested and scanned on `dev` | the same image, by digest | same |
+
+---
+
+## Monitoring
+
+kube-prometheus-stack (Helm) runs in the namespace `monitoring`: **Prometheus** scrapes the API's `/metrics` in `dev` and `prod` and the cluster (kube-state-metrics, node-exporter) every 30 s; **Grafana** shows two dashboards, *CryptoBot / API* (traffic, server errors, response times, forecasts stored, memory and CPU) and *CryptoBot / Scheduled jobs and pods* (latest run of each CronJob, time since the last success, failed Jobs, pods not ready, restarts), and evaluates the alert **Scheduled job failed** (the newest failed run of a CronJob started after its newest successful run). Dashboards and the alert rule are files in `monitoring/`: Grafana loads them at every start, so nothing is configured by hand and nothing needs a disk. The platform layer installs it on EKS; container logs go to CloudWatch Logs (7 days). Setup, the alert test and how to change a dashboard: [monitoring/README.md](monitoring/README.md).
+
+---
+
 ## Security
 
 | Layer | What protects it |
@@ -306,6 +365,19 @@ Then destroy `envs/prod` in its two steps (its README). Its **final snapshots st
 | Container image | Slim Debian base, pinned by digest; no setuptools or wheel at runtime; the AWS database CA bundle pinned by checksum. The app runs as the non-root user `10001` and cannot change its own code. |
 | Kubernetes | Every app pod: `runAsNonRoot`, read-only root file system, no privilege escalation, all Linux capabilities dropped, the default seccomp profile, no service account token (the app never calls the Kubernetes API). The CI deploy roles may change only their own namespace and cannot create or change SecretStores (`infra/terraform/platform/README.md`, "Who may do what in the cluster"). |
 | AWS | One IAM role per ServiceAccount through EKS Pod Identity (API reads the model, retrain writes it, External Secrets reads its own environment's secrets: dev can never read prod's). Databases in private subnets, reachable only from the nodes, with TLS. Passwords are generated by Terraform and written straight to Secrets Manager, never into the Terraform state. |
+
+---
+
+## Disaster recovery
+
+Pods hold no state: the data lives in RDS, DocumentDB and S3, so pods, nodes and the whole cluster can be replaced at any time.
+
+- **Container or node fails:** liveness probes restart a hung API or dashboard container, Deployments replace lost pods, prod runs two API pods spread over the nodes, and the managed node group replaces a lost node. Tested on 15 Nov 2026: a terminated node and a deleted API pod caused no downtime of the prod dashboard.
+- **Backups:** automated database backups while a session runs (dev 1 day, prod 7 days), a final snapshot of both prod databases at every teardown (what carries prod's data between sessions), the model and the Terraform state in versioned S3 buckets, the newest 30 images (and the newest 10 prod releases) in ECR, each under its commit SHA.
+- **Rebuild from IaC:** `platform` → `envs/dev` and `envs/prod` (prod restores its newest snapshots) → deploy with CD; about an hour, done at the start of every work session.
+- **Roll back:** a manual CD run with an older commit SHA deploys that commit's manifests and image again (prod after approval); about a minute.
+
+Steps, times and test results: [docs/disaster-recovery.md](docs/disaster-recovery.md).
 
 ---
 
@@ -321,7 +393,7 @@ Then destroy `envs/prod` in its two steps (its README). Its **final snapshots st
 | `/stream` | WebSocket | Binance (live) | Real-time tick feed relayed to the browser |
 | `/metrics` | GET | — | Prometheus metrics: requests and durations per route and status, plus Python/process stats (for monitoring, not listed in `/docs`) |
 
-Interactive docs: http://localhost:8000/docs
+All times are UTC (ISO 8601, without an offset). Interactive docs: http://localhost:8000/docs
 
 ---
 

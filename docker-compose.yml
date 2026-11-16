@@ -11,8 +11,7 @@
 #
 # No scheduler here: `historical` catches up on every `up`; train by hand with
 #   docker compose run --rm api python -m src.cli retrain
-# On Kubernetes (v2, in progress), CronJobs will run `ingest` every 15 min and
-# `retrain` daily.
+# On Kubernetes, CronJobs run `ingest` every 15 min and `retrain` daily.
 # ===========================================================================
 
 # Shared config for every Python app container (merged in below with "<<: *app").
