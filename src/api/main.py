@@ -188,7 +188,7 @@ async def stream(websocket: WebSocket):
     url = build_stream_url(SUPPORTED_SYMBOLS, DEFAULT_WS_INTERVAL)
     try:
         async with websockets.connect(url) as binance:
-            async for message in binance:                 # one message ~per second
+            async for message in binance:                 # about one message every 2 s
                 payload = json.loads(message)
                 data = payload.get("data", payload)       # combined stream wraps in "data"
                 candle = parse_tick(data["k"])

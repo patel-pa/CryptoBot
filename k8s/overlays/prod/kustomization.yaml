@@ -39,7 +39,7 @@ patches:
   # Two API pods, one per node where possible: the dashboard and the streamer keep an API
   # while a node is replaced. Rolling updates add the new pod before removing an old one
   # (maxUnavailable 25% of 2 rounds down to 0). The streamer stays at one pod on purpose:
-  # two would save every candle twice and ask for every forecast twice.
+  # a second would only repeat each candle write and forecast request (upserts keep one copy).
   - target:
       kind: Deployment
       name: api

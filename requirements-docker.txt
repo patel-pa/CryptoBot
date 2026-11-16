@@ -2,23 +2,24 @@
 # This is intentionally slim, so the container image stays small: the
 # development tools are in requirements-dev.txt, and the notebooks need
 # ipykernel on top (see README).
-# Versions are pinned to match the project's tested environment.
+# The app's direct dependencies are pinned to the tested versions (the packages they
+# pull in are not, except where a comment says why).
 
 # --- Web API ---
 fastapi==0.162.0
 uvicorn==0.54.0
 websockets==17.4
-prometheus-client==0.26.0    # /metrics for Prometheus (Task 9); no dependencies of its own
+prometheus-client==0.26.0    # the API's /metrics for Prometheus; no dependencies of its own
 
 # --- Databases ---
 SQLAlchemy==2.1.8
 psycopg2-binary==2.9.13      # binary build: no compiler/libpq needed in the image
 pymongo==4.20.0              # 4.17 has HIGH CVEs (Trivy); 4.18-4.19 leak memory with TLS on Python 3.11
-dnspython==2.9.2
+dnspython==2.9.2             # comes with pymongo; pinned to the tested version
 
 # --- Data & ML ---
 pandas==3.1.1
-numpy==2.4.6
+numpy==2.4.6                 # comes with pandas and scikit-learn; pinned to the tested version
 scikit-learn==1.9.1
 joblib==1.6.0
 
@@ -26,7 +27,7 @@ joblib==1.6.0
 requests==2.34.2
 websocket-client==1.9.2
 python-dotenv==1.2.4
-boto3==1.43.125              # AWS SDK: model upload/download in S3 (Task 5)
+boto3==1.43.125              # AWS SDK: model upload/download in S3
 
 # --- Dashboard ---
 streamlit==1.67.0            # at least 1.66.1: the first release that allows Pillow 13

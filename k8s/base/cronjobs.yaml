@@ -1,7 +1,8 @@
-# The scheduled jobs (decision 5): the two commands of src/cli.py. Their exit
-# code is the Job's result (0 = succeeded, else failed), which monitoring watches.
-# Run one now instead of waiting for the schedule:
-#   kubectl create job --from=cronjob/ingest ingest-now
+# The scheduled jobs (CronJobs; v1 used Airflow): the two commands of src/cli.py.
+# Their exit code is the Job's result (0 = succeeded, else failed), which
+# monitoring watches. Run one now instead of waiting for the schedule
+# (<namespace> = cryptobot on kind, dev or prod):
+#   kubectl -n <namespace> create job --from=cronjob/ingest ingest-now
 apiVersion: batch/v1
 kind: CronJob
 metadata:

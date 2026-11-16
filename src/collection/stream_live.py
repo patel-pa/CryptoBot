@@ -35,7 +35,7 @@ def closed_candle_worker():
 
 def parse_tick(k):
     """Decode a Binance kline payload (the inner 'k' object) into a flat doc.
-    Mirrors parse_tick() from notebook 02."""
+    The fields of parse_tick() in notebook 02, without event_time."""
     return {
         "symbol": k["s"],
         "kline_start_time": ms_to_timestamp(k["t"]),

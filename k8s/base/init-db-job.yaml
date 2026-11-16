@@ -1,7 +1,7 @@
 # Creates the Postgres table and the MongoDB indexes (idempotent: safe to run
 # again). Kubernetes removes the finished Job after 10 minutes. A Job cannot be
 # changed once created, so a deployment deletes a leftover one first:
-#   kubectl delete job init-db --ignore-not-found
+#   kubectl -n <namespace> delete job init-db --ignore-not-found   (cryptobot, dev or prod)
 apiVersion: batch/v1
 kind: Job
 metadata:

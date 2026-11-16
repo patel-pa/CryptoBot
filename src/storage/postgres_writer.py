@@ -17,11 +17,11 @@ def get_last_close_ms(symbol, table=POSTGRES_TABLE):
 
 
 def save_to_postgres(df, table=POSTGRES_TABLE, conflict_keys=("symbol", "open_time")):
-    def upsert_nothing(tbl, conn, keys, data_iter):
+    def insert_skip_existing(tbl, conn, keys, data_iter):
         rows = [dict(zip(keys, r, strict=True)) for r in data_iter]
         stmt = insert(tbl.table).values(rows).on_conflict_do_nothing(
             index_elements=list(conflict_keys)
         )
         conn.execute(stmt)
 
-    df.to_sql(table, get_engine(), if_exists="append", index=False, method=upsert_nothing)
+    df.to_sql(table, get_engine(), if_exists="append", index=False, method=insert_skip_existing)
