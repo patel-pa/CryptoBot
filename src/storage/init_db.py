@@ -1,6 +1,7 @@
 from src.params.constants import MONGO_COLLECTION, PREDICTIONS_COLLECTION
 from src.storage.mongo import get_collection, wait_for_mongo
 from src.storage.postgres import create_schema, wait_for_postgres
+from src.utils.signals import stop_on_sigterm
 
 
 def init_postgres():
@@ -37,4 +38,5 @@ def init_db():
 
 
 if __name__ == "__main__":
+    stop_on_sigterm()
     init_db()

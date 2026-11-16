@@ -11,6 +11,7 @@ from src.params.constants import DEFAULT_WS_INTERVAL, SUPPORTED_SYMBOLS
 from src.storage.mongo import wait_for_mongo
 from src.storage.mongo_writer import save_closed_candle
 from src.utils.retry import retry
+from src.utils.signals import stop_on_sigterm
 from src.utils.time_utils import ms_to_timestamp
 from src.utils.url_utils import build_stream_url
 
@@ -112,7 +113,7 @@ def on_message(ws, message):
 
 
 def on_error(ws, error):
-    print(f"WebSocket error: {error}")
+    print(f"WebSocket error: {error!r}")     # repr: a stop (KeyboardInterrupt) has no message
 
 
 def on_close(ws, status_code, msg):
@@ -144,4 +145,5 @@ def main():
 
 
 if __name__ == "__main__":
+    stop_on_sigterm()        # a stop closes the WebSocket and ends run_forever()
     main()
