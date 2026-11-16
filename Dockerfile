@@ -16,7 +16,9 @@
 FROM python:3.11.18-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535 AS base
 
 # PYTHONUNBUFFERED → print() / logs appear immediately in `docker compose logs`.
-# PYTHONDONTWRITEBYTECODE → don't litter the image with .pyc files.
+# PYTHONDONTWRITEBYTECODE → Python writes no .pyc files at run time (the code is
+# read-only for the app anyway); the packages' .pyc files, compiled by pip at
+# install time, stay and speed up start-up.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
@@ -68,10 +70,11 @@ RUN mkdir -m 755 /etc/ssl/aws
 ADD --checksum=sha256:90a6f1a7978a1b1b096dca6c57511ca48d3b8cf052f8e704baf358f34ea2f21b --chmod=644 \
     https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem /etc/ssl/aws/global-bundle.pem
 
-# Copy the rest of the project (source code). The trained model is NOT baked in
-# (.dockerignore): it comes from S3 on AWS, or the shared models volume locally.
-# The code stays owned by root, so the app can read it but never change it.
-COPY . .
+# Only the application code: every command runs from src/ (the tests, build files
+# and development requirements stay out of the production image). The trained
+# model is NOT baked in: it comes from S3 on AWS, or the shared models volume
+# locally. The code stays owned by root, so the app can read it but never change it.
+COPY src/ ./src/
 
 # The only folder under /app the app writes: the local model file (docker
 # compose). A new volume mounted here starts as a copy of this folder, owner

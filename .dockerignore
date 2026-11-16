@@ -1,7 +1,9 @@
 # Keep the build context (and image) small and free of secrets.
 # Every hidden file and folder: .git, .github, local settings and caches, and
 # .env (passwords, passed in at runtime via env_file / Secrets, never baked in).
-.*
+# ".?*", not ".*": ".*" also matches "." (the build context itself), and BuildKit
+# then warns "CopyIgnoredFile" on every COPY . .
+.?*
 
 # Kubernetes manifests are applied with kubectl and never needed in the image;
 # k8s/overlays/local/*.env holds the local (kind) passwords.
@@ -13,17 +15,18 @@ infra
 # Monitoring settings, dashboards and alert rules go into the cluster, never into the image.
 monitoring
 
-# Local Python environments / caches
+# Local Python environments / caches ("**/": in every folder, not only the top one)
 venv
-__pycache__
-*.pyc
+**/__pycache__
+**/*.pyc
 
 # The trained model is never baked into the image: it comes from S3 (AWS)
-# or the shared models volume (docker compose).
-models/*.pkl
+# or the shared models volume (docker compose). The whole folder, so a leftover
+# temporary file of a model save stays out too; the Dockerfile creates it.
+models
 
 # Not needed inside the runtime image
 notebooks
 references
 docs
-*.md
+**/*.md
