@@ -2,6 +2,9 @@
 
 Requests go through the real app, middleware included (tests/asgi.py).
 """
+import json
+from datetime import datetime
+
 import pytest
 from prometheus_client import REGISTRY
 
@@ -86,3 +89,17 @@ def test_a_model_error_is_counted_as_500(monkeypatch):
     with pytest.raises(ValueError):
         request("POST", "/predict")
     assert count("POST", "/predict", 500) == before + 1
+
+
+def test_a_stored_forecast_is_counted_as_200_and_its_time_is_iso(monkeypatch):
+    # The Grafana panel "forecasts stored" counts exactly this sample.
+    result = {"symbol": "BTCUSDT", "source_kline_start_time": datetime(2026, 11, 15, 16, 0),
+              "target_kline_start_time": datetime(2026, 11, 15, 16, 1), "predicted_close": 67000.5}
+    monkeypatch.setattr(api, "predict_next_close_detailed", lambda symbol: result)
+    monkeypatch.setattr(api, "save_prediction", lambda doc: None)
+    before = count("POST", "/predict", 200)
+    status, _, body = request("POST", "/predict")
+    assert status == 200
+    assert json.loads(body) == {"symbol": "BTCUSDT", "predicted_next_close": 67000.5,
+                                "target_time": "2026-11-15T16:01:00"}   # what the streamer reads
+    assert count("POST", "/predict", 200) == before + 1

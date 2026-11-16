@@ -1,13 +1,14 @@
-"""Tests for /health (liveness), /ready (readiness) and /predict, in
-src/api/main.py.
+"""Tests for the endpoints in src/api/main.py: /health (liveness), /ready
+(readiness), /predict, /predictions and /charts.
 
-The endpoint functions are called directly, so no HTTP client library is
-needed; the database pings and the prediction are replaced by fakes.
+Most endpoint functions are called directly; the input checks are tested
+through the whole app (tests/asgi.py). No HTTP client library is needed; the
+databases and the prediction are replaced by fakes.
 """
 import asyncio
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -210,3 +211,84 @@ def test_a_limit_out_of_range_is_422_before_any_database_call(limits_asked, path
 def test_a_limit_at_the_bounds_reaches_the_database(limits_asked, path, query, limit):
     assert request("GET", path, query)[0] == 200
     assert limits_asked == [limit]
+
+
+# ------------------------------------------------- /predictions and /charts
+
+class Cursor(list):
+    """What find() returns: sort and limit really sort and cut, as in MongoDB."""
+
+    def sort(self, key, direction):
+        return Cursor(sorted(self, key=lambda d: d[key], reverse=direction == -1))
+
+    def limit(self, n):
+        return Cursor(self[:n])
+
+
+class Collection:
+    """A MongoDB collection in memory: find() with equality and {"$in": [...]} filters."""
+
+    def __init__(self, docs):
+        self.docs = docs
+
+    def find(self, query, projection=None):
+        def matches(doc):
+            return all(doc.get(field) in want["$in"] if isinstance(want, dict) else doc.get(field) == want
+                       for field, want in query.items())
+        return Cursor(d for d in self.docs if matches(d))
+
+
+T0 = datetime(2026, 11, 15, 16, 0)
+
+
+@pytest.fixture
+def stored(monkeypatch):
+    """stored(forecasts, candles): the two collections /predictions reads."""
+    def install(forecasts, candles):
+        collections = {api.PREDICTIONS_COLLECTION: Collection(forecasts),
+                       api.MONGO_COLLECTION: Collection(candles)}
+        monkeypatch.setattr(api, "get_collection", lambda name: collections[name])
+    return install
+
+
+def forecast(minutes, predicted, symbol="BTCUSDT"):
+    return {"symbol": symbol, "target_kline_start_time": T0 + timedelta(minutes=minutes),
+            "predicted_close": predicted}
+
+
+def test_predictions_are_oldest_first_and_joined_with_the_real_close(stored):
+    stored(forecasts=[forecast(2, 102.0), forecast(0, 100.0), forecast(1, 101.0),
+                      forecast(1, 9.0, symbol="ETHUSDT")],          # stored in any order
+           candles=[{"symbol": "BTCUSDT", "kline_start_time": T0, "close": 99.5}])
+    assert api.predictions(symbol="BTCUSDT", limit=3) == [
+        {"target_time": T0, "predicted_close": 100.0, "actual_close": 99.5},
+        {"target_time": T0 + timedelta(minutes=1), "predicted_close": 101.0, "actual_close": None},
+        {"target_time": T0 + timedelta(minutes=2), "predicted_close": 102.0, "actual_close": None},
+    ]                                    # actual_close stays None until that candle closed
+
+
+def test_predictions_limit_1_is_the_newest_forecast(stored):
+    # The dashboard shows rows[-1] of ?limit=1 as "the" forecast.
+    stored(forecasts=[forecast(2, 102.0), forecast(0, 100.0), forecast(1, 101.0)], candles=[])
+    assert [row["predicted_close"] for row in api.predictions(limit=1)] == [102.0]
+
+
+def test_predictions_without_forecasts_is_an_empty_list(stored):
+    stored(forecasts=[], candles=[])
+    assert api.predictions() == []
+
+
+def test_charts_returns_the_newest_candles_oldest_first(monkeypatch):
+    asked = {}
+
+    def read_sql(query, engine, params):           # PostgreSQL answers newest first
+        asked.update(params, sql=str(query))
+        return pd.DataFrame({"open_time": [T0 + timedelta(minutes=m) for m in (2, 1, 0)],
+                             "close": [102.0, 101.0, 100.0]})
+
+    monkeypatch.setattr(api, "get_engine", lambda: None)
+    monkeypatch.setattr(api.pd, "read_sql", read_sql)
+    rows = api.charts(symbol="BTCUSDT", limit=3)
+    assert "ORDER BY open_time DESC LIMIT :n" in asked.pop("sql")   # the newest candles
+    assert asked == {"s": "BTCUSDT", "n": 3}
+    assert [row["close"] for row in rows] == [100.0, 101.0, 102.0]
