@@ -22,3 +22,5 @@ select = ["E", "F", "W", "I", "B", "UP"]
 [tool.pytest.ini_options]
 pythonpath = ["."]                   # the repo root, so tests can `import src...`
 testpaths = ["tests"]
+strict = true                        # unknown markers or settings are errors, not ignored
+filterwarnings = ["error"]           # a new warning (e.g. a deprecation) fails the tests

@@ -9,8 +9,8 @@ locals {
   }
 }
 
-# Credentials come from the environment, never from this file:
-# AWS_PROFILE on a laptop, OIDC role credentials in GitHub Actions.
+# Credentials come from the environment (AWS_PROFILE), never from this file. CI runs
+# only offline checks (terraform.yml): no AWS credentials there.
 provider "aws" {
   region = var.region
 

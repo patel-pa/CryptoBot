@@ -1,6 +1,6 @@
 # The network: two availability zones (EKS and the AWS databases need two), each
 # with a public subnet (load balancer, NAT gateway) and a private subnet (nodes,
-# databases). Only the load balancer gets a public address.
+# databases). Only the load balancers and the NAT gateway get public addresses.
 locals {
   # Named, not looked up: the network never changes when AWS adds a zone.
   azs = ["${var.region}a", "${var.region}b"]
@@ -20,7 +20,7 @@ module "vpc" {
   cidr = var.vpc_cidr
   azs  = local.azs
 
-  # Large private subnets (/19, 8,190 addresses each): with the VPC CNI every pod
+  # Large private subnets (/19: 8,192 addresses, 8,187 usable): with the VPC CNI every pod
   # gets an address of its node's subnet. Small public ones (/24) for the ALB and NAT.
   private_subnets = [for i in range(2) : cidrsubnet(var.vpc_cidr, 3, i)]
   public_subnets  = [for i in range(2) : cidrsubnet(var.vpc_cidr, 8, 128 + i)]

@@ -18,7 +18,7 @@ runs:
       shell: bash
       run: |
         docker build --target test -t cryptobot-test .
-        docker run --rm cryptobot-test
+        docker run --rm --network none cryptobot-test     # the tests need no network
 
     - name: Build the runtime image
       shell: bash

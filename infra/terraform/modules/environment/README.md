@@ -223,7 +223,6 @@ Each layer's own tests check that it passes its values in.
   expire.
 - **IAM database authentication:** the app signs in with the password from Secrets Manager; IAM
   tokens would need app changes and expire every 15 minutes.
-
 - **Keeping the automatic backups after a destroy** (`delete_automated_backups = false`): the
   final snapshot is what is kept; retained backups would cost money for 7 more days and are not
   needed to restore.

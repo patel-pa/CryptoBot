@@ -19,13 +19,13 @@ from functools import lru_cache
 
 import boto3
 import joblib
-from botocore.exceptions import BotoCoreError, ClientError
 
 from src.config import model_settings
 
 
 class ModelUnavailable(Exception):
-    """No trained model can be loaded: none saved yet, or its storage is unreachable."""
+    """No trained model can be loaded: none saved yet, its storage is unreachable,
+    or the stored file cannot be loaded (damaged, or saved by another version)."""
 
 
 def _to_bytes(model):
@@ -89,8 +89,10 @@ class ModelStore:
     def get(self):
         """Return the current model, downloading or reloading it only when it changed.
 
-        Raises ModelUnavailable if there is no model yet. If the storage cannot
-        be reached but a model is already loaded, that model is kept.
+        Raises ModelUnavailable if there is no usable model yet. If the storage
+        cannot be reached, or the stored model cannot be loaded, but a model is
+        already loaded, that model is kept and the storage is checked again
+        after the interval (not on every request).
         """
         with self._lock:
             now = self._clock()
@@ -102,9 +104,11 @@ class ModelStore:
                     self._model, self._version = self._load()
                     print(f"Loaded model from {self.location()} (version {self._version})",
                           flush=True)
-            except (ClientError, BotoCoreError, OSError) as exc:
+            # Storage errors, and a file that does not unpickle: loading a pickle
+            # can raise almost anything (EOFError, KeyError, ModuleNotFoundError, ...).
+            except Exception as exc:
                 if self._model is None:
-                    raise ModelUnavailable(f"no model at {self.location()}: {exc!r}") from exc
+                    raise ModelUnavailable(f"no usable model at {self.location()}: {exc!r}") from exc
                 print(f"Model check failed, keeping the loaded model: {exc!r}", flush=True)
             self._checked_at = now
             return self._model

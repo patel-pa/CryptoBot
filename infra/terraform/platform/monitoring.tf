@@ -1,8 +1,8 @@
 # Monitoring: Prometheus and Grafana from the Helm chart kube-prometheus-stack, with the same
 # settings as on kind (monitoring/values.yaml), plus our dashboards and alert rule as the
 # ConfigMaps Grafana loads by their labels. Needs no AWS rights (no Pod Identity role), keeps
-# no data on disks (no EBS volume) and is reached only through kubectl port-forward (no load
-# balancer), so it adds nothing to the teardown steps. See monitoring/README.md.
+# its data only on the pods' own disks (no EBS volume) and is reached only through kubectl
+# port-forward (no load balancer), so it adds nothing to the teardown steps. See monitoring/README.md.
 
 locals {
   monitoring_dir = "${path.module}/../../../monitoring"

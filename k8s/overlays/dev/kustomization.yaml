@@ -30,5 +30,5 @@ configMapGenerator:
       # may write only dev/* (envs/dev, output model_s3).
       - MODEL_S3_BUCKET=cryptobot-models-patel-pa
       - MODEL_S3_KEY=dev/model.pkl
-      - AWS_REGION=eu-central-1             # boto3 has no default region
+      - AWS_DEFAULT_REGION=eu-central-1     # boto3 reads this name (not AWS_REGION); without it, us-east-1
       - HISTORICAL_LOOKBACK_DAYS=1          # dev starts empty: reload only the last day

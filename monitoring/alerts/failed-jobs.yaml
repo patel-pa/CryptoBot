@@ -56,7 +56,7 @@ groups:
                 - evaluator:
                     type: gt
                     params: [0]
-        noDataState: OK               # no result = no CronJob's latest run failed
+        noDataState: OK               # no result = no CronJob's latest run failed (or kube-state-metrics is not scraped: if its scrape fails, the chart's TargetDown rule fires after 10 min)
         execErrState: Error           # Prometheus not reachable: shown as an error, not as OK
         for: 0s                       # a failed run is a fact, not a passing spike
         labels:

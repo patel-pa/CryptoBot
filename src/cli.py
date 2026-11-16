@@ -3,8 +3,9 @@
     python -m src.cli ingest     store the candles missing from Postgres (every 15 min)
     python -m src.cli retrain    ingest, then train and save the model (daily)
 
-Exit code 0 = success, 1 = failure. Kubernetes marks a Job as failed from the
-exit code, and failed jobs are what the monitoring alert watches.
+Exit code 0 = success, 1 = failure, 130 = stopped (SIGTERM, e.g. at the Job's
+deadline). Kubernetes marks a Job as failed from the exit code, and failed
+jobs are what the monitoring alert watches.
 """
 import argparse
 import sys
@@ -12,6 +13,7 @@ import time
 import traceback
 
 from src.collection.fetch_historical import backfill
+from src.utils.signals import stop_on_sigterm
 
 
 def ingest():
@@ -58,4 +60,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    stop_on_sigterm()        # a stopped Job (deadline, deletion) ends at once, as failed
     sys.exit(main())

@@ -3,7 +3,7 @@
 #
 #   postgres   : historical candle store
 #   mongodb    : live closed-candle store
-#   init       : (one-shot) create the Postgres table + Mongo index, then exit
+#   init       : (one-shot) create the Postgres table + Mongo indexes, then exit
 #   historical : (one-shot) backfill / catch up historical candles, then exit
 #   streamer   : (always-on) live Binance WebSocket -> MongoDB
 #   api        : (always-on) FastAPI  -> http://localhost:8000/docs
@@ -11,8 +11,7 @@
 #
 # No scheduler here: `historical` catches up on every `up`; train by hand with
 #   docker compose run --rm api python -m src.cli retrain
-# On Kubernetes (v2, in progress), CronJobs will run `ingest` every 15 min and
-# `retrain` daily.
+# On Kubernetes, CronJobs run `ingest` every 15 min and `retrain` daily.
 # ===========================================================================
 
 # Shared config for every Python app container (merged in below with "<<: *app").
@@ -49,13 +48,15 @@ services:
   postgres:
     image: postgres:18
     container_name: cryptobot-postgres
-    restart: always
+    restart: unless-stopped     # like the app services: a stopped stack stays stopped
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
     ports:
-      - "${POSTGRES_PORT}:5432"
+      # 127.0.0.1: reachable from this computer only (notebooks, tools), not from the
+      # local network; the same for every port below.
+      - "127.0.0.1:${POSTGRES_PORT}:5432"
     volumes:
       # Since 18 the image keeps its data in /var/lib/postgresql/18/docker and
       # refuses a volume on the old path /var/lib/postgresql/data.
@@ -64,8 +65,8 @@ services:
       - pipeline_network
     healthcheck:
       # Must pass -d: without it, pg_isready connects to a DB named after the
-      # USER (cryptobot_user), which doesn't exist, spamming the log with
-      # "FATAL: database \"cryptobot_user\" does not exist" every interval.
+      # USER, which doesn't exist whenever POSTGRES_USER differs from POSTGRES_DB,
+      # spamming the log with "FATAL: database ... does not exist" every interval.
       # Targeting the real DB keeps the check clean (and still exits 0 = healthy).
       # Also -h localhost to force a TCP probe (not the Unix socket, which answers
       # during initdb's bootstrap before TCP:5432 is really listening). start_period
@@ -80,12 +81,12 @@ services:
   mongodb:
     image: mongo:8.0
     container_name: cryptobot-mongodb
-    restart: always
+    restart: unless-stopped
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
     ports:
-      - "${MONGO_PORT}:27017"
+      - "127.0.0.1:${MONGO_PORT}:27017"
     volumes:
       - mongo_data:/data/db
     networks:
@@ -118,7 +119,7 @@ services:
   historical:
     <<: *app
     container_name: cryptobot-historical
-    command: python -m src.cli ingest   # the command the Kubernetes ingest CronJob will run
+    command: python -m src.cli ingest   # the same command as the Kubernetes ingest CronJob
     restart: "no"
     depends_on:
       init:
@@ -141,7 +142,7 @@ services:
     command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000
     restart: unless-stopped
     ports:
-      - "8000:8000"      # http://localhost:8000/docs  (change the LEFT port if 8000 is busy)
+      - "127.0.0.1:8000:8000"      # http://localhost:8000/docs  (change the middle port if 8000 is busy)
     volumes:
       - models_data:/app/models     # the local model file: written by `python -m src.cli retrain`
       - ./src:/app/src              # live host code (re-listed; see x-app note)
@@ -156,19 +157,14 @@ services:
     # fileWatcherType=none DISABLES file watching entirely. On a Windows -> WSL2
     # bind mount, ANY watcher (poll or the default watchdog) sees phantom
     # file-change events and Streamlit restarts its process every ~30s — an
-    # endless crash loop. A container doesn't need live-watch anyway: the bind
-    # mount below still runs your LIVE code, you just restart to deploy edits —
-    # `docker compose restart dashboard` (or press "R" in an open browser tab).
+    # endless crash loop. A container doesn't need live-watch anyway: the shared
+    # bind mount still runs your LIVE code. To see an edit, restart it with
+    # `docker compose restart dashboard`, then reload the browser tab (pressing
+    # "R" alone reruns the code Streamlit has already loaded).
     command: streamlit run src/visualization/app.py --server.port=8501 --server.address=0.0.0.0 --server.headless=true --server.fileWatcherType=none
     restart: unless-stopped
-    environment:
-      API_BASE: http://api:8000     # reach the API container by its service name
     ports:
-      - "8501:8501"      # http://localhost:8501
-    volumes:
-      # Run the LIVE host source, not the copy baked into the image. Edits to
-      # src/ take effect on the next Streamlit rerun — no `docker compose --build`.
-      - ./src:/app/src
+      - "127.0.0.1:8501:8501"      # http://localhost:8501
     depends_on:
       - api
 

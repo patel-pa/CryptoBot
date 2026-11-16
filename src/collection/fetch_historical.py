@@ -55,7 +55,7 @@ def backfill(symbol=SYMBOL, now_ms=None):
     Resumes 1 ms after the newest stored candle. An empty database starts
     HISTORICAL_LOOKBACK_DAYS before now (dev) or at HISTORICAL_START_DATE (prod,
     and the default). Safe to run again at any time (the Kubernetes ingest
-    CronJob will run it every 15 minutes). `now_ms` can be fixed in tests.
+    CronJob runs it every 15 minutes). `now_ms` can be fixed in tests.
     """
     # Settings first: a bad value fails at once on every run, not only when the
     # database happens to be empty, and before waiting for Postgres.
@@ -78,10 +78,11 @@ def backfill(symbol=SYMBOL, now_ms=None):
     # Persist each 1000-candle page AS SOON AS it arrives, instead of accumulating
     # the whole history in memory and writing it once at the very end. Why this is
     # better (and NOT harder on Postgres):
-    #   • the dashboard sees data within seconds, not after the full ~280k-row backfill
+    #   • the dashboard sees data within seconds, not after a long first backfill
     #   • memory stays bounded — one page at a time, never the whole history in RAM
-    #   • each write is a small, fast-committing 1000-row upsert (ON CONFLICT DO
-    #     NOTHING) — far gentler than one multi-million-parameter INSERT
+    #   • each write is a small, fast-committing 1000-row insert that skips rows
+    #     already stored (ON CONFLICT DO NOTHING) — far gentler than one
+    #     multi-million-parameter INSERT
     #   • the write rate is capped by the fetch loop's sleep(0.15) + API latency
     #     (~2 pages/sec), so Postgres is idle most of the time — no chance of overload
     #   • if the run is interrupted, the rows already saved let the NEXT run resume
@@ -105,7 +106,7 @@ def backfill(symbol=SYMBOL, now_ms=None):
 
         df = raw_to_dataframe(batch)
         df["symbol"] = symbol
-        save_to_postgres(df[DB_COLUMNS])        # small batched upsert for THIS page
+        save_to_postgres(df[DB_COLUMNS])        # small batched insert-or-skip for THIS page
 
         total_saved += len(batch)
         print(f"Saved {total_saved:,} candles for {symbol} "

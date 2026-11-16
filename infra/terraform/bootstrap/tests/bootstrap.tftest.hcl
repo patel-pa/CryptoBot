@@ -4,8 +4,9 @@
 mock_provider "aws" {}
 
 # The provider still checks that policy JSON is valid (deploy_prod includes deploy_dev's,
-# and the role policies use all three), so each permission document gets a small,
-# distinct JSON instead of the mock's random text.
+# the roles use all of them), so each policy document, permissions and trust alike, gets
+# a small JSON with an Id of its own instead of the mock's random text. Distinct Ids also
+# let a test notice a role wired to the wrong document.
 override_data {
   target = data.aws_iam_policy_document.build
   values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"build\",\"Statement\":[]}" }
@@ -19,6 +20,21 @@ override_data {
 override_data {
   target = data.aws_iam_policy_document.deploy_prod
   values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"deploy-prod\",\"Statement\":[]}" }
+}
+
+override_data {
+  target = data.aws_iam_policy_document.github_trust["build"]
+  values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"trust-build\",\"Statement\":[]}" }
+}
+
+override_data {
+  target = data.aws_iam_policy_document.github_trust["deploy-dev"]
+  values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"trust-deploy-dev\",\"Statement\":[]}" }
+}
+
+override_data {
+  target = data.aws_iam_policy_document.github_trust["deploy-prod"]
+  values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"trust-deploy-prod\",\"Statement\":[]}" }
 }
 
 run "every_bucket_gets_every_protection" {
@@ -63,6 +79,42 @@ run "every_bucket_gets_every_protection" {
     error_message = "Every bucket policy must deny requests that do not use HTTPS."
   }
 
+  # The bucket ARNs are only known after apply; with these, the policy's resources are known now.
+  override_resource {
+    target          = aws_s3_bucket.this["tfstate"]
+    override_during = plan
+    values          = { arn = "arn:aws:s3:::cryptobot-tfstate-patel-pa" }
+  }
+
+  override_resource {
+    target          = aws_s3_bucket.this["models"]
+    override_during = plan
+    values          = { arn = "arn:aws:s3:::cryptobot-models-patel-pa" }
+  }
+
+  assert {
+    condition = alltrue([for name, d in data.aws_iam_policy_document.https_only :
+      d.statement[0].resources == toset([aws_s3_bucket.this[name].arn, "${aws_s3_bucket.this[name].arn}/*"])
+    ])
+    error_message = "The HTTPS rule must cover each bucket itself and every object in it (\"<bucket ARN>/*\")."
+  }
+
+  assert {
+    condition = alltrue([for c in aws_s3_bucket_server_side_encryption_configuration.this :
+      one(c.rule).apply_server_side_encryption_by_default[0].sse_algorithm == "AES256"
+    ])
+    error_message = "Every bucket must be encrypted with S3-managed keys (AES256), as the docs say."
+  }
+
+  # The retention the READMEs, docs/disaster-recovery.md and cd.yml's messages quote.
+  assert {
+    condition = alltrue([for l in aws_s3_bucket_lifecycle_configuration.this :
+      l.rule[0].noncurrent_version_expiration[0].noncurrent_days == 90 &&
+      l.rule[0].abort_incomplete_multipart_upload[0].days_after_initiation == 7
+    ])
+    error_message = "Older versions must be kept 90 days and unfinished uploads removed after 7, as documented."
+  }
+
   assert {
     condition     = aws_s3_bucket.this["tfstate"].bucket == "cryptobot-tfstate-patel-pa"
     error_message = "The state bucket name must match the backend block in backend.tf."
@@ -83,6 +135,16 @@ run "ecr_keeps_images_safe" {
       "${r.rulePriority} ${try(r.selection.tagPatternList[0], "untagged")}"
     ] == ["1 prod-*", "2 untagged", "3 *"]
     error_message = "The prod-* rule must come first, so the rule for all other tags never expires a prod image."
+  }
+
+  assert {
+    condition     = [for r in jsondecode(aws_ecr_lifecycle_policy.app.policy).rules : r.selection.countNumber] == [10, 1, 30]
+    error_message = "ECR keeps the newest 10 prod images, untagged ones 1 day and the newest 30 others, as the docs and cd.yml's messages say."
+  }
+
+  assert {
+    condition     = aws_ecr_repository.app.image_scanning_configuration[0].scan_on_push
+    error_message = "ECR must scan every pushed image (basic scanning, free)."
   }
 }
 
@@ -143,6 +205,14 @@ run "each_ci_role_trusts_exactly_one_github_context" {
   }
 
   assert {
+    condition = alltrue([for d in data.aws_iam_policy_document.github_trust :
+      d.statement[0].actions == toset(["sts:AssumeRoleWithWebIdentity"]) &&
+      [for p in d.statement[0].principals : p.type] == ["Federated"]
+    ])
+    error_message = "A CI role may only be assumed with a GitHub OIDC token (Federated, AssumeRoleWithWebIdentity)."
+  }
+
+  assert {
     condition     = toset([for r in aws_iam_role.ci : r.name]) == toset(["cryptobot-github-build", "cryptobot-github-deploy-dev", "cryptobot-github-deploy-prod"])
     error_message = "Unexpected CI role names."
   }
@@ -150,6 +220,40 @@ run "each_ci_role_trusts_exactly_one_github_context" {
 
 run "ci_roles_have_least_privilege" {
   command = plan
+
+  # ARNs are only known after apply; with these the policies' resources are known now.
+  override_resource {
+    target          = aws_ecr_repository.app
+    override_during = plan
+    values          = { arn = "arn:aws:ecr:eu-central-1:123456789012:repository/cryptobot" }
+  }
+
+  override_data {
+    target = data.aws_caller_identity.current
+    values = { account_id = "123456789012" }
+  }
+
+  override_data {
+    target = data.aws_partition.current
+    values = { partition = "aws" }
+  }
+
+  # Least privilege is two halves: which actions (below) and on what. Every statement
+  # names its one repository or cluster; only the ECR login cannot be limited.
+  assert {
+    condition = merge(
+      { for s in data.aws_iam_policy_document.build.statement : "build/${s.sid}" => s.resources },
+      { for s in data.aws_iam_policy_document.deploy_dev.statement : "deploy-dev/${s.sid}" => s.resources },
+      { for s in data.aws_iam_policy_document.deploy_prod.statement : "deploy-prod/${s.sid}" => s.resources },
+      ) == {
+      "build/EcrLogin"             = toset(["*"])
+      "build/PushImage"            = toset(["arn:aws:ecr:eu-central-1:123456789012:repository/cryptobot"])
+      "deploy-dev/FindImage"       = toset(["arn:aws:ecr:eu-central-1:123456789012:repository/cryptobot"])
+      "deploy-dev/ReachCluster"    = toset(["arn:aws:eks:eu-central-1:123456789012:cluster/cryptobot"])
+      "deploy-prod/TagTestedImage" = toset(["arn:aws:ecr:eu-central-1:123456789012:repository/cryptobot"])
+    }
+    error_message = "Each CI permission must name its one ECR repository or EKS cluster (only the ECR login is \"*\")."
+  }
 
   assert {
     condition = toset(flatten([for s in data.aws_iam_policy_document.build.statement : s.actions])) == toset([
@@ -186,27 +290,13 @@ run "repository_must_be_owner_slash_name" {
 # and what they depend on (the OIDC provider and the ECR repository, whose ARN the
 # policies use). The two "-target" warnings this prints are expected. Teardown ignores
 # prevent_destroy only from Terraform 1.14 on, hence required_version in versions.tf.
-# Each document has a distinct JSON, so a role wired to the wrong one fails.
+# Every document has an Id of its own (top of this file), so a role wired to the wrong
+# one, or a trust policy swapped with a permission policy, fails.
 run "each_role_uses_its_own_policies" {
   command = apply
 
   plan_options {
     target = [aws_iam_role.ci, aws_iam_role_policy.ci]
-  }
-
-  override_data {
-    target = data.aws_iam_policy_document.github_trust["build"]
-    values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"build\",\"Statement\":[]}" }
-  }
-
-  override_data {
-    target = data.aws_iam_policy_document.github_trust["deploy-dev"]
-    values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"deploy-dev\",\"Statement\":[]}" }
-  }
-
-  override_data {
-    target = data.aws_iam_policy_document.github_trust["deploy-prod"]
-    values = { json = "{\"Version\":\"2012-10-17\",\"Id\":\"deploy-prod\",\"Statement\":[]}" }
   }
 
   assert {

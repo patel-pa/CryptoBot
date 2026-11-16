@@ -1,7 +1,8 @@
 from src.params.enums import Interval, Symbol
 
-# All symbols the system collects, stores, and predicts for
-SUPPORTED_SYMBOLS = [Symbol.BTCUSDT] #Symbol.ETHUSDT
+# The symbols the live stream subscribes to; the backfill, the training and the
+# forecasts use the first one.
+SUPPORTED_SYMBOLS = [Symbol.BTCUSDT]
 
 # REST API: 1-minute candles for historical data / ML training
 DEFAULT_REST_INTERVAL = Interval.ONE_MINUTE
@@ -45,5 +46,6 @@ POSTGRES_TABLE = "ohlcv_data"        # historical candles (batch pipeline)
 MONGO_COLLECTION = "closed_candles"  # completed live candles (stream pipeline)
 PREDICTIONS_COLLECTION = "predictions"  # model forecasts (for predicted-vs-actual tracking)
 
-# Trained ML model artifact (saved under the repo's models/ directory)
+# File name of the trained model: models/<name> locally (docker compose, kind), and the
+# default S3 key on AWS (MODEL_S3_KEY overrides it).
 MODEL_FILENAME = "model.pkl"

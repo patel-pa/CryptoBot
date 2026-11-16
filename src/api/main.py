@@ -1,9 +1,10 @@
 import asyncio
 import json
+from typing import Annotated
 
 import pandas as pd
 import websockets
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import text
@@ -11,7 +12,7 @@ from sqlalchemy import text
 from src.api import metrics
 from src.collection.stream_live import parse_tick
 from src.models.model_store import ModelUnavailable
-from src.models.predict_model import predict_next_close_detailed
+from src.models.predict_model import NoCandlesYet, predict_next_close_detailed
 from src.params.constants import (
     DEFAULT_WS_INTERVAL,
     MONGO_COLLECTION,
@@ -33,6 +34,12 @@ DEFAULT_SYMBOL = SUPPORTED_SYMBOLS[0].value
 # Upper bound for each /ready check. A Kubernetes readiness probe must answer
 # quickly; the probe's own timeout (set in the manifests) is a bit higher.
 READY_TIMEOUT_SECONDS = 2.0
+
+# The most rows one request may ask for: enough for the dashboard (up to 500
+# candles, 240 forecasts), small enough that no request can fill the pod's
+# memory. A limit outside 1..max is answered 422 before any database call.
+MAX_CHART_ROWS = 1000
+MAX_PREDICTION_ROWS = 1440       # one day of 1-minute forecasts
 
 
 @app.get("/health")
@@ -95,7 +102,8 @@ async def ready():
 
 
 @app.get("/charts")
-def charts(symbol: str = DEFAULT_SYMBOL, limit: int = 100):
+def charts(symbol: str = DEFAULT_SYMBOL,
+           limit: Annotated[int, Query(ge=1, le=MAX_CHART_ROWS)] = 100):
     """Recent historical candles from Postgres, oldest -> newest (for charting)."""
     query = text(
         f"SELECT * FROM {POSTGRES_TABLE} WHERE symbol = :s "
@@ -114,15 +122,17 @@ def predict(symbol: str = DEFAULT_SYMBOL):
     candle) so /predictions can chart predicted vs actual. The streamer calls
     this after each closed candle; readers use GET /predictions. Without a
     trained model this returns 503; /ready is not affected, because /charts
-    and /predictions still work.
+    and /predictions still work. 404 means no candle is stored yet. Anything
+    else (e.g. a model trained on other features) is a server error, 500, so
+    it shows in the error metrics instead of looking like a normal "not yet".
     """
     try:
         result = predict_next_close_detailed(symbol=symbol)
     except ModelUnavailable as e:
         print(f"/predict: {e}", flush=True)       # details (bucket, path) to the log only
         raise HTTPException(status_code=503, detail="No trained model is available yet.") from e
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
+    except NoCandlesYet as e:
+        raise HTTPException(status_code=404, detail="No closed candle is stored yet.") from e
     save_prediction(result)
     return {
         "symbol": symbol,
@@ -132,7 +142,8 @@ def predict(symbol: str = DEFAULT_SYMBOL):
 
 
 @app.get("/predictions")
-def predictions(symbol: str = DEFAULT_SYMBOL, limit: int = 240):
+def predictions(symbol: str = DEFAULT_SYMBOL,
+                limit: Annotated[int, Query(ge=1, le=MAX_PREDICTION_ROWS)] = 240):
     """Recent stored forecasts, each joined with the candle's ACTUAL close.
 
     Rows are oldest -> newest, with fields:
@@ -177,7 +188,7 @@ async def stream(websocket: WebSocket):
     url = build_stream_url(SUPPORTED_SYMBOLS, DEFAULT_WS_INTERVAL)
     try:
         async with websockets.connect(url) as binance:
-            async for message in binance:                 # one message ~per second
+            async for message in binance:                 # about one message every 2 s
                 payload = json.loads(message)
                 data = payload.get("data", payload)       # combined stream wraps in "data"
                 candle = parse_tick(data["k"])

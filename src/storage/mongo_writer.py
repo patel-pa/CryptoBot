@@ -6,8 +6,9 @@ def save_closed_candle(doc, collection_name=MONGO_COLLECTION):
     """Idempotently store one completed candle.
 
     Upsert keyed on (symbol, kline_start_time) — the same fields as the
-    unique index. A re-inserted candle updates in place instead of
-    creating a duplicate, mirroring Postgres' ON CONFLICT DO NOTHING.
+    unique index. A re-sent candle overwrites the stored one in place
+    instead of creating a duplicate (PostgreSQL keeps the first copy
+    instead: ON CONFLICT DO NOTHING).
     """
     collection = get_collection(collection_name)
     collection.update_one(

@@ -82,11 +82,14 @@ run "network_has_two_zones_one_nat_and_a_free_s3_path" {
     error_message = "S3 traffic must use the free gateway endpoint, not the NAT gateway."
   }
 
+  # On the subnets the module creates, not on the locals: a tag the module never receives
+  # must fail too.
   assert {
-    condition = local.subnet_tags == {
-      public  = { "kubernetes.io/role/elb" = 1 }
-      private = { "kubernetes.io/role/internal-elb" = 1 }
-    }
+    condition = (
+      length(module.vpc.public_subnet_objects) == 2 && length(module.vpc.private_subnet_objects) == 2 &&
+      alltrue([for s in module.vpc.public_subnet_objects : lookup(s.tags, "kubernetes.io/role/elb", "") == "1"]) &&
+      alltrue([for s in module.vpc.private_subnet_objects : lookup(s.tags, "kubernetes.io/role/internal-elb", "") == "1"])
+    )
     error_message = "The subnets must carry the tags the Load Balancer Controller looks for."
   }
 }
@@ -94,6 +97,8 @@ run "network_has_two_zones_one_nat_and_a_free_s3_path" {
 run "cluster_is_pinned_and_each_deploy_role_edits_only_its_namespace" {
   command = plan
 
+  # The EKS module has no outputs for its endpoints or the nodes' launch-template tags, so
+  # these two check the locals that eks.tf passes to it.
   assert {
     condition = local.cluster == {
       kubernetes_version      = "1.37"
@@ -121,6 +126,16 @@ run "cluster_is_pinned_and_each_deploy_role_edits_only_its_namespace" {
   assert {
     condition     = module.eks.cluster_version == "1.37"
     error_message = "The cluster must run Kubernetes 1.37."
+  }
+
+  assert {
+    condition = length(kubernetes_namespace_v1.env) == 2 && alltrue([
+      for ns in kubernetes_namespace_v1.env :
+      lookup(ns.metadata[0].labels, "pod-security.kubernetes.io/enforce", "") == "restricted" &&
+      lookup(ns.metadata[0].labels, "pod-security.kubernetes.io/enforce-version", "") == "v1.37" &&
+      lookup(ns.metadata[0].labels, "pod-security.kubernetes.io/warn", "") == "restricted"
+    ])
+    error_message = "dev and prod must enforce Pod Security \"restricted\": no privileged or host-level pods on the shared nodes."
   }
 
   assert {
@@ -169,6 +184,15 @@ run "cluster_is_pinned_and_each_deploy_role_edits_only_its_namespace" {
 run "controllers_are_pinned_and_deploy_jobs_cannot_change_secret_stores" {
   command = plan
 
+  # The Load Balancer Controller's settings reach Helm as one YAML text, which also holds
+  # the VPC ID (known only after apply). With a known ID the text is known now, so the
+  # checks below read what Helm really gets.
+  override_resource {
+    target          = module.vpc.aws_vpc.this[0]
+    override_during = plan
+    values          = { id = "vpc-0123456789abcdef0" }
+  }
+
   assert {
     condition = {
       for name, release in { lb = helm_release.aws_lb_controller, eso = helm_release.external_secrets } :
@@ -182,17 +206,17 @@ run "controllers_are_pinned_and_deploy_jobs_cannot_change_secret_stores" {
 
   assert {
     condition = (
-      local.lb_controller_values.enableServiceMutatorWebhook == false &&
-      local.lb_controller_values.replicaCount == 1 &&
-      local.lb_controller_values.region == "eu-central-1" &&
-      contains(keys(local.lb_controller_values), "vpcId") &&
-      local.lb_controller_values.serviceAccount.name == "aws-load-balancer-controller"
+      yamldecode(helm_release.aws_lb_controller.values[0]).enableServiceMutatorWebhook == false &&
+      yamldecode(helm_release.aws_lb_controller.values[0]).replicaCount == 1 &&
+      yamldecode(helm_release.aws_lb_controller.values[0]).region == "eu-central-1" &&
+      yamldecode(helm_release.aws_lb_controller.values[0]).vpcId == "vpc-0123456789abcdef0" &&
+      yamldecode(helm_release.aws_lb_controller.values[0]).serviceAccount.name == "aws-load-balancer-controller"
     )
     error_message = "Load Balancer Controller: Service webhook off, one replica, region and VPC set, its service account."
   }
 
   assert {
-    condition     = local.lb_controller_values.defaultTags == { Project = "cryptobot", ManagedBy = "aws-load-balancer-controller" }
+    condition     = yamldecode(helm_release.aws_lb_controller.values[0]).defaultTags == { Project = "cryptobot", ManagedBy = "aws-load-balancer-controller" }
     error_message = "Every ALB, target group and security group the Load Balancer Controller creates must carry the project tag."
   }
 
@@ -287,9 +311,13 @@ run "monitoring_is_pinned_private_and_loads_every_dashboard_and_alert" {
       helm_release.kube_prometheus_stack.values[0] == file("${local.monitoring_dir}/values.yaml") &&
       yamldecode(helm_release.kube_prometheus_stack.values[0]).alertmanager.enabled == false &&
       yamldecode(helm_release.kube_prometheus_stack.values[0]).grafana.sidecar.datasources.alertmanager.enabled == false &&
+      yamldecode(helm_release.kube_prometheus_stack.values[0]).defaultRules.rules.alertmanager == false &&
+      yamldecode(helm_release.kube_prometheus_stack.values[0]).defaultRules.disabled == {
+        PrometheusNotConnectedToAlertmanagers = true, Watchdog = true, InfoInhibitor = true
+      } &&
       yamldecode(helm_release.kube_prometheus_stack.values[0]).grafana.sidecar.alerts.enabled == true
     )
-    error_message = "EKS must use kind's settings file: no Alertmanager (nor a Grafana data source pointing to it), Grafana's alert loader on."
+    error_message = "EKS must use kind's settings file: no Alertmanager (nor a Grafana data source or built-in rules that need it), Grafana's alert loader on."
   }
 
   assert {
@@ -389,7 +417,8 @@ run "log_add_on_refuses_a_cluster_without_kept_log_groups" {
 }
 
 # Route table IDs exist only after apply. With the mock provider an apply creates nothing
-# real; the target keeps it to the endpoint and the network parts it needs.
+# real; the target keeps it to the endpoint and the network parts it needs. The two
+# "-target" warnings this prints are expected.
 run "s3_endpoint_serves_only_the_private_route_tables" {
   command = apply
 

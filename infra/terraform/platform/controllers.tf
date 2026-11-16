@@ -130,7 +130,7 @@ resource "helm_release" "external_secrets" {
 
 # --- CloudWatch observability add-on: container logs only (Fluent Bit), into the log
 # groups the bootstrap layer created with 7-day retention. Its metrics features are off:
-# Prometheus and Grafana cover metrics (Week 4). ---
+# Prometheus and Grafana cover metrics (monitoring.tf). ---
 
 module "cloudwatch_pod_identity" {
   source  = "terraform-aws-modules/eks-pod-identity/aws"
@@ -139,7 +139,8 @@ module "cloudwatch_pod_identity" {
   name            = "${var.cluster_name}-cloudwatch-agent"
   use_name_prefix = false
 
-  # Only what Fluent Bit needs (the module's ready-made option would add X-Ray too).
+  # AWS's ready-made policy for the CloudWatch agent, broader than Fluent Bit needs (it also
+  # allows metrics, X-Ray and any log group); the module's own option would add X-Ray rights.
   additional_policy_arns = {
     CloudWatchAgentServerPolicy = "arn:${data.aws_partition.current.partition}:iam::aws:policy/CloudWatchAgentServerPolicy"
   }

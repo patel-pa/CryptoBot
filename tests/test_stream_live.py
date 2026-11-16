@@ -189,5 +189,5 @@ def test_importing_creates_no_worker():
     code = ("import src.api.main, src.collection.stream_live as s; "
             "assert s.closed_candle_worker.cache_info().currsize == 0")
     result = subprocess.run([sys.executable, "-c", code], cwd=REPO_ROOT,
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, timeout=120)
     assert result.returncode == 0, result.stderr

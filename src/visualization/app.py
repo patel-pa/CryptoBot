@@ -1,6 +1,6 @@
 """
-CryptoBot — Streamlit Dashboard (Version 2 — merged live + historical chart)
-============================================================================
+CryptoBot — Streamlit Dashboard (merged live + historical chart)
+================================================================
 
 A beginner-friendly dashboard for the CryptoBot project.
 
@@ -23,7 +23,7 @@ HOW TO RUN
 3. A browser tab opens automatically at http://localhost:8501
 
 REQUIRES (install once):
-       pip install streamlit plotly requests
+       pip install -r requirements-docker.txt
 """
 
 import json  # to decode the JSON ticks the stream sends
@@ -49,8 +49,8 @@ pd.set_option("future.infer_string", False)
 # 0. CONFIGURATION
 # ---------------------------------------------------------------------------
 # Where the FastAPI backend is running. Read from the environment so it works
-# both directly (defaults to localhost) and inside Docker (set to http://api:8000).
-# When we move to AWS later, ONLY this value changes — the rest stays put.
+# both directly (defaults to localhost) and in a container: docker compose and
+# Kubernetes set it to the API's service address, http://api:8000.
 API_BASE = os.getenv("API_BASE", "http://localhost:8000")
 
 # The five columns every candle table uses, in the order the chart expects.
@@ -165,15 +165,25 @@ class LiveStreamer:
 
     def _run(self):
         """Reconnect-forever loop: read every tick and remember the latest."""
+        last_error = None                         # the problem logged last, if any
         while True:
+            ws = None
             try:
                 ws = websocket.create_connection(self.ws_url, timeout=5)
                 while True:
                     tick = json.loads(ws.recv())  # blocks here until the next tick
                     with self._lock:
                         self._latest = tick
-            except Exception:
-                time.sleep(2)                     # dropped/unreachable — back off, retry
+                    last_error = None             # working again: log the next problem
+            except Exception as exc:              # unreachable, dropped, or no tick within 5 s
+                # One log line per new problem, not one every 2 s during an outage.
+                if repr(exc) != last_error:
+                    print(f"Live stream {self.ws_url}: {exc!r}; retrying every 2 s", flush=True)
+                    last_error = repr(exc)
+            finally:
+                if ws is not None:
+                    ws.close()                    # free the failed connection before retrying
+            time.sleep(2)                         # back off, then retry
 
     def latest_tick(self):
         """Return the most recent tick (or None if none has arrived yet)."""
@@ -212,31 +222,36 @@ if st.sidebar.button("Refresh historical"):
 st.title("CryptoBot — Live + Historical Price Chart")
 st.caption("One candlestick view: historical candles, live forming candles, and the next-candle forecast.")
 
+# The messages below are shown on the public dashboard too: they suit every
+# environment and never show internal addresses (those go to the log).
 if not api_is_up():
-    st.error(
-        f"⚠️ Can't reach the API at {API_BASE}.\n\n"
-        "Start it first with:  `uvicorn src.api.main:app --reload`"
-    )
+    print(f"The API at {API_BASE} does not answer /health", flush=True)
+    st.error("⚠️ The API is not reachable yet (it may still be starting). "
+             "Reload the page in a minute.")
     st.stop()
 
 
 # ---------------------------------------------------------------------------
 # 4. FETCH HISTORICAL DATA (cached; refreshes via the sidebar button / slider)
 # ---------------------------------------------------------------------------
-hist_df = fetch_charts(symbol, limit)
+try:
+    hist_df = fetch_charts(symbol, limit)
+except requests.RequestException as exc:     # an error answer or no answer from /charts
+    print(f"GET /charts failed: {exc!r}", flush=True)
+    st.error("⚠️ The price history is unavailable right now. Reload the page in a minute.")
+    st.stop()
 if hist_df.empty:
     st.warning(
-        "⏳ Historical candles are still loading. The backfill "
-        "(`cryptobot-historical`) fetches the price history into the database "
-        "the first time it runs — this can take a couple of minutes after a "
-        "fresh start or a `docker compose down -v`. This page will fill in "
-        "automatically; give it a minute, then press **R** to rerun."
+        "⏳ Historical candles are still loading: the ingest job fetches the price "
+        "history into the database the first time it runs (docker compose: the "
+        "`historical` service; Kubernetes: the `ingest` CronJob). This can take a "
+        "few minutes after a fresh start. Reload the page in a minute."
     )
     st.stop()
 
 
 # ---------------------------------------------------------------------------
-# 5. THE MERGED LIVE CHART  (this whole block re-runs itself every 2 seconds)
+# 5. THE MERGED LIVE CHART  (this whole block re-runs itself every 3 seconds)
 # ---------------------------------------------------------------------------
 # live_candles maps  kline_start_time -> {open_time, open, high, low, close}.
 # Keying by start time means repeated ticks in the same minute keep updating
@@ -402,7 +417,7 @@ def merged_chart():
             e2.metric("Avg abs error", f"${mae:,.2f}")
 
 
-merged_chart()   # call once; the fragment keeps itself refreshing every 2s
+merged_chart()   # call once; the fragment keeps itself refreshing every 3 s
 
 
 # ---------------------------------------------------------------------------

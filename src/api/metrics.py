@@ -10,7 +10,8 @@ import time
 
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 
-UNMATCHED = "unmatched"          # route label for paths that match no route (404)
+UNMATCHED = "unmatched"          # route label when no API route matched: 404s, and FastAPI's
+                                 # own /docs, /redoc and /openapi.json
 
 REQUESTS = Counter(
     "cryptobot_http_requests_total",

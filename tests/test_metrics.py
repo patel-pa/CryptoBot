@@ -1,37 +1,17 @@
 """Tests for GET /metrics and the request metrics (src/api/metrics.py).
 
-Requests go through the real app, middleware included. A small helper plays
-the web server (ASGI is the interface between a Python web app and its
-server), so no HTTP client library is needed.
+Requests go through the real app, middleware included (tests/asgi.py).
 """
-import asyncio
+import json
+from datetime import datetime
 
 import pytest
 from prometheus_client import REGISTRY
 
 import src.api.main as api
 from src.models.model_store import ModelUnavailable
-
-
-def request(method, path):
-    """Send one HTTP request to the app; return (status, headers, body)."""
-    scope = {
-        "type": "http", "method": method, "path": path, "raw_path": path.encode(),
-        "query_string": b"", "headers": [], "http_version": "1.1", "scheme": "http",
-        "server": ("test", 80), "client": ("test", 1234), "root_path": "",
-    }
-    sent = []
-
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message):
-        sent.append(message)
-
-    asyncio.run(api.app(scope, receive, send))
-    start = next(m for m in sent if m["type"] == "http.response.start")
-    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
-    return start["status"], dict(start["headers"]), body
+from src.models.predict_model import NoCandlesYet
+from tests.asgi import request
 
 
 def count(method, route, status):
@@ -88,3 +68,38 @@ def test_a_crash_is_counted_as_500(monkeypatch):
     with pytest.raises(RuntimeError):     # the server answers 500, then re-raises it for its log
         request("POST", "/predict")
     assert count("POST", "/predict", 500) == before + 1
+
+
+def test_predict_before_the_first_candle_is_counted_as_404(monkeypatch):
+    def no_candle(symbol):
+        raise NoCandlesYet("no closed candle stored yet")
+
+    monkeypatch.setattr(api, "predict_next_close_detailed", no_candle)
+    before = count("POST", "/predict", 404)
+    assert request("POST", "/predict")[0] == 404
+    assert count("POST", "/predict", 404) == before + 1
+
+
+def test_a_model_error_is_counted_as_500(monkeypatch):
+    def broken_input(symbol):
+        raise ValueError("Input X contains NaN.")
+
+    monkeypatch.setattr(api, "predict_next_close_detailed", broken_input)
+    before = count("POST", "/predict", 500)
+    with pytest.raises(ValueError):
+        request("POST", "/predict")
+    assert count("POST", "/predict", 500) == before + 1
+
+
+def test_a_stored_forecast_is_counted_as_200_and_its_time_is_iso(monkeypatch):
+    # The Grafana panel "forecasts stored" counts exactly this sample.
+    result = {"symbol": "BTCUSDT", "source_kline_start_time": datetime(2026, 11, 15, 16, 0),
+              "target_kline_start_time": datetime(2026, 11, 15, 16, 1), "predicted_close": 67000.5}
+    monkeypatch.setattr(api, "predict_next_close_detailed", lambda symbol: result)
+    monkeypatch.setattr(api, "save_prediction", lambda doc: None)
+    before = count("POST", "/predict", 200)
+    status, _, body = request("POST", "/predict")
+    assert status == 200
+    assert json.loads(body) == {"symbol": "BTCUSDT", "predicted_next_close": 67000.5,
+                                "target_time": "2026-11-15T16:01:00"}   # what the streamer reads
+    assert count("POST", "/predict", 200) == before + 1

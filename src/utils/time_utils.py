@@ -28,6 +28,6 @@ def ms_to_timestamp(ms: int | pd.Series) -> pd.Timestamp | pd.Series:
 
     Returns:
         pd.Timestamp if input is a scalar, pd.Series of Timestamps if input is a Series.
+        Without a time zone; they mean UTC, as every time in this project does.
     """
     return pd.to_datetime(ms, unit="ms")
-

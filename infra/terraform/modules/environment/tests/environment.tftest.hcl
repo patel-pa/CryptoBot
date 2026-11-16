@@ -35,8 +35,9 @@ variables {
 }
 
 mock_provider "aws" {
-  # What reading a credentials secret back returns in the mock apply run below. Plan runs
-  # never open it: its secret ID is unknown until the secret exists.
+  # What reading a credentials secret back returns: in the apply runs, and in every plan run
+  # on a state that already holds the secrets (the read-back runs at every plan, README).
+  # Only a plan on an empty state skips it: the secret ID is unknown until the secret exists.
   mock_ephemeral "aws_secretsmanager_secret_version" {
     defaults = {
       secret_string = "{\"username\":\"cryptobot\",\"password\":\"mockpassword\"}"
@@ -147,9 +148,23 @@ run "databases_are_small_private_encrypted_and_pinned" {
       aws_db_instance.postgres.multi_az == false &&
       aws_db_instance.postgres.backup_retention_period == 1 &&
       aws_db_instance.postgres.deletion_protection == false &&
-      aws_db_instance.postgres.skip_final_snapshot == true
+      aws_db_instance.postgres.skip_final_snapshot == true &&
+      aws_db_instance.postgres.delete_automated_backups == true
     )
-    error_message = "RDS must be the small, private, encrypted, single-zone PostgreSQL 18 instance of dev."
+    error_message = "RDS must be the small, private, encrypted, single-zone PostgreSQL 18 instance of dev, its automated backups deleted with it."
+  }
+
+  # The secrets and the security group read the locals above; the databases must use the
+  # same values, or the app gets a database name, user or port that does not exist.
+  assert {
+    condition = (
+      aws_db_instance.postgres.db_name == local.postgres.db_name &&
+      aws_db_instance.postgres.username == local.postgres.username &&
+      aws_db_instance.postgres.port == local.postgres.port &&
+      aws_docdb_cluster.mongo.master_username == local.mongo.username &&
+      aws_docdb_cluster.mongo.port == local.mongo.port
+    )
+    error_message = "The databases must use the name, user and port that the secrets and the security group announce."
   }
 
   assert {
@@ -650,7 +665,7 @@ run "prod_create_restores_the_newest_manual_snapshot" {
 
 run "prod_running_never_looks_for_a_snapshot" {
   command   = plan
-  state_key = "prod" # its own, empty state: these runs plan a create
+  state_key = "prod" # its own state, kept empty (plan runs never write it); the overrides say the databases exist
 
   variables {
     env                 = "prod"
@@ -759,7 +774,7 @@ run "a_named_snapshot_wins_over_the_newest" {
 
 run "teardown_step_1_names_the_final_snapshots" {
   command   = plan
-  state_key = "prod" # its own, empty state: these runs plan a create
+  state_key = "prod" # its own state, kept empty (plan runs never write it); the overrides say the databases exist
 
   variables {
     env                 = "prod"

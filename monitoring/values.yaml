@@ -12,6 +12,18 @@
 alertmanager:
   enabled: false
 
+# The built-in rules that only make sense with an Alertmanager: its own rules (useless
+# without it), one that is always true without it, and two that fire on purpose to feed it
+# (Watchdog tests the notification path; InfoInhibitor fires whenever an info-level alert
+# does, so Alertmanager can mute those). Those three would show as firing forever.
+defaultRules:
+  rules:
+    alertmanager: false
+  disabled:
+    PrometheusNotConnectedToAlertmanagers: true
+    Watchdog: true
+    InfoInhibitor: true
+
 # Targets Prometheus cannot reach, which would show as "down" forever: the control plane
 # (run by AWS on EKS, on localhost only in kind) and kube-proxy (its metrics listen on
 # localhost only in kind; nothing of ours uses them). Off also removes their built-in rules.

@@ -3,8 +3,8 @@
 #   .github/actions/test-build-scan). Not on dev: there cd.yml's image job runs the same steps
 #   right before it pushes the image, so here they would only run twice.
 # - config: the three Kustomize overlays and monitoring/ rendered with the deploy's kubectl and
-#   validated against the Kubernetes 1.37 API; Trivy scans the overlays and the Terraform code
-#   for misconfigurations. (The monitoring files' own checks run in terraform.yml.)
+#   validated against the Kubernetes 1.37 API; Trivy scans the dev and prod overlays and the
+#   Terraform code for misconfigurations. (The monitoring files' own checks run in terraform.yml.)
 # - workflows: the workflow files themselves (actionlint, zizmor) and the pins kept twice.
 # Terraform's own checks (fmt, validate, tests) are in terraform.yml. Not on main: main only
 # receives merges whose files are those of a dev commit these checks already ran on (cd.yml

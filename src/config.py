@@ -1,12 +1,12 @@
 """Runtime configuration, read from environment variables.
 
-Nothing is read or validated at import time: each settings function reads the
+No setting is read or validated at import time: each settings function reads the
 environment when it's called, i.e. when code first needs that database. Each
 database is validated on its own, so a service only needs the variables of the
 database it actually uses (the streamer never needs Postgres credentials).
 
-Locally, a .env file in the repo root is loaded if present. docker compose and
-Kubernetes pass real environment variables instead.
+Locally, a .env file in the repo root is loaded into the environment at import,
+if present. docker compose and Kubernetes pass real environment variables instead.
 """
 import math
 import os
@@ -94,7 +94,7 @@ class PostgresSettings:
 
     def url(self):
         """SQLAlchemy URL. URL.create escapes special characters in the password
-        (managed passwords from AWS Secrets Manager can contain @ / : etc.)."""
+        (a password may contain @ / : etc.)."""
         query = {key: value for key, value in
                  (("sslmode", self.sslmode), ("sslrootcert", self.sslrootcert)) if value}
         return URL.create(
