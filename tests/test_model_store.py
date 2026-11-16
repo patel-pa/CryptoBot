@@ -146,6 +146,24 @@ def test_s3_outage_without_a_loaded_model_raises_unavailable(s3_store, s3):
         s3_store.get()
 
 
+def test_s3_model_that_does_not_load_raises_unavailable(s3_store, s3):
+    s3.put_object(Bucket="models-bucket", Key="dev/model.pkl", Body=b"not a pickle")
+    with pytest.raises(ModelUnavailable, match="s3://models-bucket/dev/model.pkl"):
+        s3_store.get()                           # /predict answers 503, not 500
+
+
+def test_s3_model_that_does_not_load_keeps_the_loaded_one(s3_store, s3, clock):
+    s3_store.save(MODEL_1)
+    s3_store.get()
+    s3.put_object(Bucket="models-bucket", Key="dev/model.pkl", Body=b"not a pickle")
+    clock.now += 61
+    assert s3_store.get() == MODEL_1             # the damaged version is not served
+    calls = len(s3.calls)
+    clock.now += 30
+    assert s3_store.get() == MODEL_1
+    assert len(s3.calls) == calls                # not downloaded again on every request
+
+
 # -------------------------------------------------------- local file mode
 
 def test_local_save_writes_the_file_and_get_reads_it(local_store):
